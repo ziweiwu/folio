@@ -4,6 +4,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Isolated for the same reason as the pty checks: nothing here should read or
+# write the state directory a real reader's positions live in. See I-24.
+STATE=$(mktemp -d -t umv-smoke)
+export XDG_STATE_HOME="$STATE"
+trap 'rm -rf "$STATE"' EXIT
+
 RUN=${RUN:-"npx tsx src/cli.tsx"}
 DOC=test/fixtures/kitchen-sink.md
 fail=0

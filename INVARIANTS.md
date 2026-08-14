@@ -50,6 +50,7 @@ covered both ways.
 | I-20 | A link's target is carried on the row in **every** link mode. Whether the terminal can make links clickable is a display setting, and following one must not depend on it | `md/inline.ts` · `core/wrap.ts` · `test/links.test.ts` |
 | I-21 | A remembered reading position is a **block index**, not a row. Rows depend on the terminal's width, so a position saved in a wide window would land somewhere else in a narrow one | `core/positions.ts` · `test/state.test.ts` |
 | I-22 | An unreadable or corrupt position store is treated as empty, never as an error. Remembering where you were is a convenience; losing it costs one keypress | `core/positions.ts` · `test/state.test.ts` |
+| I-24 | The verification scripts are hermetic: they point `XDG_STATE_HOME` at a temporary directory, so they neither read nor write the positions a real reader has accumulated. A check that inherits saved state passes or fails according to what was last read | `scripts/verify-pty.sh` · `scripts/smoke.sh` |
 | I-23 | Copying is reported as *sent*, never as *copied*. OSC 52 is advisory — the terminal may silently refuse — so the message must not claim more than actually happened | `core/clipboard.ts` · `app.tsx` |
 
 ## CLI citizenship

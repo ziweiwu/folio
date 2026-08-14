@@ -10,7 +10,14 @@ cd "$(dirname "$0")/.."
 
 CMD=${1:-"npx tsx src/cli.tsx test/fixtures/kitchen-sink.md"}
 LOG=$(mktemp -t umv-pty)
-trap 'rm -f "$LOG"' EXIT
+
+# Hermetic: the viewer remembers where you were, so a check that inherited the
+# real state directory would open a previous run's position instead of the top
+# of the document — and pass or fail depending on what you last read. See I-24.
+STATE=$(mktemp -d -t umv-state)
+export XDG_STATE_HOME="$STATE"
+
+trap 'rm -rf "$LOG" "$STATE"' EXIT
 
 ESC=$'\033'
 fail=0
