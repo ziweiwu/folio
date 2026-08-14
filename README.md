@@ -149,6 +149,16 @@ npm run preview -- test/fixtures/kitchen-sink.md 100   # layout only, no TUI
 npm run preview:html  # real frames to docs/preview.html, for reviewing colour
 ```
 
+### Releasing
+
+`npm version <patch|minor|major>`, push the tag, then cut a GitHub Release. The
+`publish` workflow runs the full verification, checks the tag matches
+`package.json`, and publishes.
+
+Authentication is npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)
+over OIDC — there is no `NPM_TOKEN` secret to store or rotate, and provenance is
+attested automatically from the workflow run.
+
 `INVARIANTS.md` is the contract: twenty-three numbered invariants, each with a
 test whose name starts with its number, so `npx vitest run -t "I-6"` runs exactly
 the resize-anchoring guard.
