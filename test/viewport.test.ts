@@ -1,0 +1,431 @@
+import { describe, expect, it, vi } from 'vitest';
+import { createCoalescer } from '../src/core/coalesce.js';
+import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
+import { findMatches, highlightRow, isCaseSensitive, nextMatch } from '../src/core/search.js';
+import { parseArgs } from '../src/core/options.js';
+import { parseBurst } from '../src/core/keys.js';
+import { anchorOffset, clampOffset, maxOffset } from '../src/core/position.js';
+import { composeFrame, scrollPercent, scrollbar, sectionAt, statusBar } from '../src/ui/chrome.js';
+import { centre, overlayRows } from '../src/ui/overlay.js';
+import { helpPane, tocPane } from '../src/ui/panes.js';
+import { layoutDoc } from '../src/md/layout.js';
+import { isMarkdownPath, layoutText } from '../src/md/text.js';
+import { pickTheme } from '../src/ui/theme.js';
+import { fixture, opts } from './helpers.js';
+
+const theme = pickTheme('dark');
+
+describe('I-9 scrolling coalesces to one update per frame', () => {
+  it('I-9 applies the first event immediately, so a single key is instant', () => {
+    const flush = vi.fn();
+    const c = createCoalescer({ frameMs: 16, flush, setTimer: () => 1, clearTimer: () => {} });
+    c.push(1);
+    expect(flush).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('I-9 collapses a burst of keys into two updates, not one per key', () => {
+    const flush = vi.fn();
+    let fire: (() => void) | null = null;
+    const c = createCoalescer({
+      frameMs: 16,
+      flush,
+      setTimer: (fn) => {
+        fire = fn;
+        return 1;
+      },
+      clearTimer: () => {},
+    });
+
+    for (let i = 0; i < 30; i++) c.push(1);
+    // Leading edge only, so far.
+    expect(flush).toHaveBeenCalledTimes(1);
+    fire!();
+    // ...then one trailing update carrying the other 29 lines.
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect(flush).toHaveBeenLastCalledWith(29);
+  });
+
+  it('I-9 an idle period does not emit an empty update', () => {
+    const flush = vi.fn();
+    let fire: (() => void) | null = null;
+    const c = createCoalescer({
+      frameMs: 16, flush,
+      setTimer: (fn) => { fire = fn; return 1; },
+      clearTimer: () => {},
+    });
+    c.push(3);
+    fire!();
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards pending deltas when an absolute jump supersedes them', () => {
+    const flush = vi.fn();
+    const c = createCoalescer({ frameMs: 16, flush, setTimer: () => 1, clearTimer: () => {} });
+    c.push(1);
+    c.push(5);
+    c.discard();
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('I-10 the viewport draws a fixed number of rows', () => {
+  const doc = layoutDoc(fixture('large.md'), opts({ width: 100 }));
+
+  it('I-10 a 10k-row document composes exactly as many rows as the terminal has', () => {
+    expect(doc.lines.length).toBeGreaterThan(3000);
+    for (const height of [5, 24, 60]) {
+      const rows = composeFrame(doc, { offset: 0, height, total: doc.lines.length }, 100, theme, 3);
+      expect(rows).toHaveLength(height);
+    }
+  });
+
+  it('I-10 composing a frame costs far less than drawing one', () => {
+    const FRAMES = 200;
+    const run = () => {
+      const t0 = process.hrtime.bigint();
+      for (let i = 0; i < FRAMES; i++) {
+        composeFrame(doc, { offset: i, height: 40, total: doc.lines.length }, 100, theme, 3);
+      }
+      return Number(process.hrtime.bigint() - t0) / 1e6 / FRAMES;
+    };
+    /* Min-of-3, not median: a wall-clock measurement inflates under load, and a
+       test suite runs precisely when the machine is loaded, so the minimum is
+       the least-contended sample and still an upper bound. */
+    const msPerFrame = Math.min(run(), run(), run());
+    // An Ink frame costs ~30ms to draw. Composing it must disappear next to
+    // that, or scrolling a long document would cost more than a short one.
+    expect(msPerFrame).toBeLessThan(3);
+  });
+
+  it('I-5 clamps the offset past the end rather than drawing blanks', () => {
+    const rows = composeFrame(doc, { offset: 0, height: 10, total: doc.lines.length }, 100, theme, 3);
+    expect(rows.every((r) => ansiWidth(r) === 100)).toBe(true);
+  });
+
+  it('pads every row to the full width, so no previous frame shows through', () => {
+    for (const width of [40, 80, 200]) {
+      const rows = composeFrame(doc, { offset: 12, height: 8, total: doc.lines.length }, width, theme, 3);
+      expect(new Set(rows.map(ansiWidth))).toEqual(new Set([width]));
+    }
+  });
+});
+
+describe('scrollbar', () => {
+  it('fills the gutter with blanks when the document fits', () => {
+    const bar = scrollbar({ offset: 0, height: 20, total: 12 }, theme, 0);
+    expect(bar.join('')).toBe(' '.repeat(20));
+  });
+
+  it('puts the thumb at the top at the top and the bottom at the bottom', () => {
+    const top = scrollbar({ offset: 0, height: 10, total: 100 }, theme, 0);
+    const bottom = scrollbar({ offset: 90, height: 10, total: 100 }, theme, 0);
+    expect(top[0]).toBe('┃');
+    expect(top[9]).toBe('│');
+    expect(bottom[9]).toBe('┃');
+    expect(bottom[0]).toBe('│');
+  });
+
+  it('never loses the thumb entirely on a very long document', () => {
+    const bar = scrollbar({ offset: 5000, height: 30, total: 100000 }, theme, 0);
+    expect(bar.filter((c) => c === '┃').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('status bar', () => {
+  const info = { name: 'README.md', section: '## Install', offset: 40, height: 20, total: 200, hints: 'q quit' };
+
+  it('is exactly the terminal width at every size', () => {
+    for (const width of [24, 40, 80, 100, 200]) {
+      expect(ansiWidth(statusBar(info, width, theme, 3))).toBe(width);
+    }
+  });
+
+  it('drops the hints before it drops the filename', () => {
+    const long = { ...info, hints: '/ search   t toc   ? keys   q quit' };
+    const wide = stripAnsi(statusBar(long, 100, theme, 0));
+    expect(wide).toContain('README.md');
+    expect(wide).toContain('q quit');
+
+    const narrow = stripAnsi(statusBar(long, 30, theme, 0));
+    expect(narrow).toContain('README.md');
+    expect(narrow).not.toContain('q quit');
+  });
+
+  it('drops the section before it drops the position', () => {
+    const long = { ...info, section: '## A very long section title indeed', hints: 'q quit' };
+    const narrow = stripAnsi(statusBar(long, 34, theme, 0));
+    expect(narrow).toContain('22%');
+    expect(narrow).not.toContain('A very long section');
+  });
+
+  it('shows a transient note across the whole bar, never truncated into the filename', () => {
+    const note = 'sent 6 lines to the clipboard';
+    const bar = stripAnsi(statusBar({ ...info, message: note }, 80, theme, 0));
+    expect(bar).toContain(note);
+    expect(bar).not.toContain('README.md');
+    expect(ansiWidth(statusBar({ ...info, message: note }, 80, theme, 3))).toBe(80);
+  });
+
+  it('reports position the way a reader would describe it', () => {
+    expect(scrollPercent(0, 20, 200)).toBe(0);
+    expect(scrollPercent(180, 20, 200)).toBe(100);
+    expect(scrollPercent(90, 20, 200)).toBe(50);
+    // A document that fits is entirely on screen, which is 100% read.
+    expect(scrollPercent(0, 40, 10)).toBe(100);
+  });
+
+  it('names the section the top of the viewport is inside', () => {
+    const doc = layoutDoc(fixture('kitchen-sink.md'), opts());
+    const title = doc.toc[0]!;
+    const tables = doc.toc.find((t) => t.text === 'Tables')!;
+    expect(sectionAt(doc, title.line)).toBe('# folio');
+    expect(sectionAt(doc, tables.line + 1)).toBe('## Tables');
+    // Front matter sits above the first heading, and belongs to no section.
+    expect(sectionAt(doc, 0)).toBeNull();
+  });
+});
+
+describe('search', () => {
+  const doc = layoutDoc(fixture('kitchen-sink.md'), opts({ level: 0 }));
+
+  it('is case-insensitive until the query contains a capital', () => {
+    expect(isCaseSensitive('pure')).toBe(false);
+    expect(isCaseSensitive('Pure')).toBe(true);
+    expect(findMatches(doc.lines, 'LAYOUT')).toHaveLength(0);
+    expect(findMatches(doc.lines, 'layout').length).toBeGreaterThan(0);
+  });
+
+  it('finds every occurrence on a row, not just the first', () => {
+    const line = { ansi: 'aa aa aa', plain: 'aa aa aa', block: 0 };
+    expect(findMatches([line], 'aa')).toHaveLength(3);
+  });
+
+  it('wraps around at both ends', () => {
+    const matches = findMatches(doc.lines, 'the');
+    expect(nextMatch(matches, Number.MAX_SAFE_INTEGER, false)).toBe(0);
+    expect(nextMatch(matches, -1, true)).toBe(matches.length - 1);
+    expect(nextMatch([], 0, false)).toBe(-1);
+  });
+
+  it('re-styles a match inside an already-styled row without changing its width', () => {
+    const source = layoutDoc('This has **bold pure** text in it.\n', opts({ level: 3 }));
+    const row = source.lines[0]!;
+    const ranges = findMatches([row], 'pure').map((m) => ({
+      start: m.start, end: m.end, style: theme.matchCurrent,
+    }));
+    const out = highlightRow(row.ansi, row.plain, ranges, 100, 3);
+    expect(stripAnsi(out)).toBe(row.plain);
+    expect(ansiWidth(out)).toBe(ansiWidth(row.ansi));
+    expect(out).toContain('48;2;255;158;100'); // the current-match background
+  });
+
+  it('leaves a row alone when nothing matches it', () => {
+    const row = doc.lines[0]!;
+    expect(highlightRow(row.ansi, row.plain, [], 100, 3)).toBe(row.ansi);
+  });
+});
+
+describe('overlays', () => {
+  const doc = layoutDoc(fixture('kitchen-sink.md'), opts());
+  const base = composeFrame(doc, { offset: 0, height: 24, total: doc.lines.length }, 100, theme, 3);
+
+  it('keeps every row exactly the frame width', () => {
+    const pane = tocPane(doc, 3, 100, 24, theme, 3);
+    const at = centre(pane.width, pane.height, 100, 24);
+    const out = overlayRows(base, pane.rows, at.top, at.left, 100, 3);
+    expect(out).toHaveLength(base.length);
+    expect(new Set(out.map(ansiWidth))).toEqual(new Set([100]));
+  });
+
+  it('shows the pane contents over the document', () => {
+    const pane = helpPane(100, theme, 3);
+    const out = overlayRows(base, pane.rows, 2, 10, 100, 3);
+    expect(stripAnsi(out.join('\n'))).toContain('half a screen');
+  });
+
+  it('stays on screen in a small terminal', () => {
+    for (const [w, h] of [[40, 10], [24, 6], [200, 60]] as const) {
+      const pane = tocPane(doc, 0, w, h, theme, 3);
+      const at = centre(pane.width, pane.height, w, h);
+      expect(at.left + pane.width).toBeLessThanOrEqual(w);
+      const frame = composeFrame(doc, { offset: 0, height: h, total: doc.lines.length }, w, theme, 3);
+      const out = overlayRows(frame, pane.rows, at.top, at.left, w, 3);
+      expect(new Set(out.map(ansiWidth))).toEqual(new Set([w]));
+    }
+  });
+
+  it('says so when a document has no headings', () => {
+    const plain = layoutDoc('just a paragraph\n', opts());
+    const pane = tocPane(plain, 0, 100, 24, theme, 0);
+    expect(pane.rows.join('\n')).toContain('no headings');
+  });
+});
+
+const mustParse = (argv: string[]) => {
+  const r = parseArgs(argv);
+  if (!r.ok) throw new Error(`expected ${argv.join(' ')} to parse: ${r.message}`);
+  return r.options;
+};
+
+describe('option parsing', () => {
+  it('defaults to a paged, 88-column, auto-themed read', () => {
+    const r = parseArgs(['README.md']);
+    expect(r.ok && r.options).toMatchObject({
+      file: 'README.md', maxWidth: 88, theme: 'auto', pager: true, links: 'osc8',
+    });
+  });
+
+  it('accepts both --flag value and --flag=value', () => {
+    expect(mustParse(['--width', '60']).maxWidth).toBe(60);
+    expect(mustParse(['--width=60']).maxWidth).toBe(60);
+    expect(mustParse(['--theme=light']).theme).toBe('light');
+    expect(mustParse(['--links=ref']).links).toBe('ref');
+  });
+
+  it('explains what a bad value should have been', () => {
+    const r = parseArgs(['--width', '3']);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toContain('at least 20');
+    expect(!r.ok && r.code).toBe(2);
+  });
+
+  it('rejects an unknown option and a second file', () => {
+    expect(parseArgs(['--nope']).ok).toBe(false);
+    expect(parseArgs(['a.md', 'b.md']).ok).toBe(false);
+  });
+
+  it('treats 0 as fill the terminal', () => {
+    expect(mustParse(['--width', '0']).maxWidth).toBe(0);
+  });
+
+  it('reads a document from stdin when given - or nothing', () => {
+    expect(mustParse(['-']).file).toBeNull();
+    expect(mustParse([]).file).toBeNull();
+  });
+});
+
+describe('I-4 scrolling never re-runs layout', () => {
+  it('I-4 composing a frame is orders of magnitude cheaper than laying the document out', () => {
+    const src = fixture('large.md');
+    const t0 = process.hrtime.bigint();
+    const doc = layoutDoc(src, opts({ width: 100 }));
+    const layoutMs = Number(process.hrtime.bigint() - t0) / 1e6;
+
+    const t1 = process.hrtime.bigint();
+    for (let i = 0; i < 100; i++) {
+      composeFrame(doc, { offset: i, height: 40, total: doc.lines.length }, 100, theme, 3);
+    }
+    const composeMs = Number(process.hrtime.bigint() - t1) / 1e6 / 100;
+
+    // If a scroll re-laid the document out, these would be the same number.
+    expect(composeMs * 20).toBeLessThan(layoutMs);
+  });
+});
+
+describe('I-5 the offset is always in range', () => {
+  it('I-5 clamps past either end', () => {
+    expect(clampOffset(-10, 100, 20)).toBe(0);
+    expect(clampOffset(999, 100, 20)).toBe(80);
+    expect(clampOffset(50, 100, 20)).toBe(50);
+  });
+
+  it('I-5 treats a document shorter than the viewport as one screenful', () => {
+    expect(maxOffset(5, 40)).toBe(0);
+    expect(clampOffset(3, 5, 40)).toBe(0);
+  });
+
+  it('I-5 handles an empty document', () => {
+    expect(clampOffset(0, 0, 24)).toBe(0);
+    expect(maxOffset(0, 24)).toBe(0);
+  });
+});
+
+describe('I-6 a resize keeps the reader in place', () => {
+  it('I-6 lands on the same block after a re-layout at a different width', () => {
+    const src = fixture('kitchen-sink.md');
+    const wide = layoutDoc(src, opts({ width: 160 }));
+    const narrow = layoutDoc(src, opts({ width: 60 }));
+
+    const offset = Math.floor(wide.lines.length / 2);
+    const block = wide.lines[offset]!.block;
+    const moved = anchorOffset(narrow.lines, block, 24);
+
+    expect(narrow.lines[moved]!.block).toBeGreaterThanOrEqual(block);
+    // The same content, not the top of the document.
+    expect(moved).toBeGreaterThan(0);
+    expect(narrow.lines[moved]!.block).toBe(block);
+  });
+
+  it('I-6 clamps to the end when the document got shorter', () => {
+    const doc = layoutDoc('# a\n\nb\n', opts());
+    expect(anchorOffset(doc.lines, 9999, 24)).toBe(0);
+  });
+});
+
+describe('I-15 key repeat arrives in bursts', () => {
+  it('I-15 reads a run of one character as that many keystrokes', () => {
+    expect(parseBurst('jjjj', {})).toEqual({ key: 'j', repeat: 4 });
+    expect(parseBurst('j', {})).toEqual({ key: 'j', repeat: 1 });
+  });
+
+  it('I-15 leaves mixed input alone, because mode may change between characters', () => {
+    expect(parseBurst('tq', {})).toEqual({ key: 'tq', repeat: 1 });
+  });
+
+  it('I-15 never splits a modified key', () => {
+    expect(parseBurst('dd', { ctrl: true })).toEqual({ key: 'dd', repeat: 1 });
+    expect(parseBurst('dd', { meta: true })).toEqual({ key: 'dd', repeat: 1 });
+  });
+
+  it('I-15 handles an empty chunk', () => {
+    expect(parseBurst('', {})).toEqual({ key: '', repeat: 1 });
+  });
+})
+
+describe('formats this viewer does not parse', () => {
+  it('shows an org file verbatim rather than misreading it as markdown', () => {
+    const src = fixture('sample.org');
+    const doc = layoutText(src, opts({ level: 0, width: 100 }));
+    const text = doc.lines.map((l) => l.plain).join('\n');
+    // Org markup survives exactly as written; markdown would have eaten it.
+    expect(text).toContain('#+TITLE: An Org file');
+    expect(text).toContain('* A top-level heading');
+    expect(text).toContain('#+BEGIN_SRC python');
+    expect(text).toContain('[[https://example.com][A link in org syntax]]');
+    expect(doc.toc).toEqual([]);
+  });
+
+  it('preserves the author’s own blank lines and indentation', () => {
+    // width 40 with no cap puts the text column two cells in, so the margin is
+    // easy to read off the expectation.
+    const doc = layoutText('one\n\n\n    indented\n', opts({ level: 0, width: 40, maxWidth: 0 }));
+    const plain = doc.lines.map((l) => l.plain);
+    expect(plain).toEqual(['  one', '', '', '      indented']);
+  });
+
+  it('I-1 never overflows the terminal, at any width', () => {
+    const src = fixture('sample.org');
+    for (const width of [40, 80, 100, 200]) {
+      const doc = layoutText(src, opts({ width, level: 3 }));
+      for (const line of doc.lines) expect(ansiWidth(line.ansi)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('routes by extension, defaulting to markdown', () => {
+    expect(isMarkdownPath('notes.md')).toBe(true);
+    expect(isMarkdownPath('README')).toBe(true);
+    expect(isMarkdownPath(null)).toBe(true);
+    expect(isMarkdownPath('notes.org')).toBe(false);
+    expect(isMarkdownPath('SERVER.LOG')).toBe(false);
+    expect(isMarkdownPath('notes.txt')).toBe(false);
+  });
+
+  it('takes an explicit override from the command line', () => {
+    const r = parseArgs(['--text', 'x.md']);
+    expect(r.ok && r.options.markdown).toBe(false);
+    const m = parseArgs(['--markdown', 'x.org']);
+    expect(m.ok && m.options.markdown).toBe(true);
+    const d = parseArgs(['x.md']);
+    expect(d.ok && d.options.markdown).toBeNull();
+  });
+});

@@ -1,0 +1,82 @@
+{
+  "name": "@ziweiwu/folio",
+  "version": "0.1.0",
+  "description": "Read markdown in your terminal, properly. Real typography, real syntax highlighting, and scrolling that keeps up with your keyboard.",
+  "type": "module",
+  "bin": {
+    "folio": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "measure": "tsx scripts/measure.ts",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build",
+    "preview": "tsx scripts/preview.ts",
+    "preview:html": "tsx scripts/gen-html.ts",
+    "start": "tsx src/cli.tsx",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "verify:pty": "bash scripts/verify-pty.sh",
+    "verify:smoke": "bash scripts/smoke.sh"
+  },
+  "dependencies": {
+    "@shikijs/core": "^4.4.3",
+    "@shikijs/engine-javascript": "^4.4.3",
+    "@shikijs/langs": "^4.4.3",
+    "@shikijs/themes": "^4.4.3",
+    "ink": "^7.1.1",
+    "marked": "^18.0.9",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.0",
+    "fast-check": "^4.1.1",
+    "ink-testing-library": "^4.0.0",
+    "oxlint": "^1.77.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "markdown",
+    "viewer",
+    "pager",
+    "tui",
+    "terminal",
+    "cli",
+    "ink",
+    "glow",
+    "readme",
+    "syntax-highlighting",
+    "shiki",
+    "wikilinks",
+    "folio"
+  ],
+  "author": "Ziwei Wu (https://github.com/ziweiwu)",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "INVARIANTS.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "homepage": "https://github.com/ziweiwu/folio#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ziweiwu/folio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ziweiwu/folio/issues"
+  }
+}

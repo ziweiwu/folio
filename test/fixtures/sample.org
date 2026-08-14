@@ -1,0 +1,24 @@
+#+TITLE: An Org file
+#+AUTHOR: Ziwei Wu
+
+* A top-level heading
+  Org uses asterisks for headings, which markdown would read as emphasis.
+
+** A nested heading
+   - a plain list item
+   - another one
+
+   #+BEGIN_SRC python
+   def hello():
+       print("this is a source block")
+   #+END_SRC
+
+*** Deeper
+    | a table | in org |
+    |---------+--------|
+    | one     | two    |
+
+    [[https://example.com][A link in org syntax]]
+
+* TODO Something to do                                            :tag:another:
+  DEADLINE: <2026-09-01 Tue>
