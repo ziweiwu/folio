@@ -388,7 +388,7 @@ footer a { color: var(--accent); }
 `;
 
 function page(sections: string): string {
-  return `<title>Markdown Viewer Specimen</title>
+  return `<title>Folio Specimen</title>
 <style>${CSS}</style>
 <div class="wrap">
   <div class="masthead">
