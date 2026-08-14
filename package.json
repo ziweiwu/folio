@@ -1,7 +1,7 @@
 {
   "name": "@ziweiwu/folio",
   "version": "0.1.1",
-  "description": "Read markdown in your terminal, properly. Real typography, real syntax highlighting, and scrolling that keeps up with your keyboard.",
+  "description": "Read markdown in your terminal, properly. Real typography, Shiki syntax highlighting, vim keys, search, a table of contents, link following, and scrolling that keeps up with your keyboard.",
   "type": "module",
   "bin": {
     "folio": "dist/cli.js"
@@ -15,6 +15,7 @@
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build",
     "preview": "tsx scripts/preview.ts",
     "preview:html": "tsx scripts/gen-html.ts",
+    "screenshots": "tsx scripts/gen-png.ts",
     "start": "tsx src/cli.tsx",
     "test": "vitest run",
     "test:watch": "vitest",

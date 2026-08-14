@@ -3,7 +3,7 @@
 [![ci](https://github.com/ziweiwu/folio/actions/workflows/ci.yml/badge.svg)](https://github.com/ziweiwu/folio/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@ziweiwu/folio)](https://www.npmjs.com/package/@ziweiwu/folio)
 
-Read markdown in your terminal, properly. Real typography, real syntax
+**Read markdown in your terminal, properly.** Real typography, real syntax
 highlighting, and scrolling that keeps up with your keyboard.
 
 ```sh
@@ -11,37 +11,86 @@ npm install -g @ziweiwu/folio
 folio README.md
 ```
 
-## Design philosophy
+![folio showing a document](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/hero.png)
 
-Three things, in this order, whenever they conflict.
+## What it feels like to use
 
-**Simplicity.** seven runtime dependencies, no configuration file, no plugin
-system, no stash. It opens a file and shows it to you. The keys are vim's,
-because you already know them.
+It opens instantly, it scrolls like a native app, and the keys are the ones you
+already know. Nothing to configure — point it at a file and read.
 
-**Clarity.** The document should read the way a well-set page reads: an 88-column
-text measure, hanging indents, real hierarchy, colour used as a redundant signal
-and never the only one. `NO_COLOR` output is fully legible — headings keep their
-rules, tasks keep their boxes, code keeps its frame.
+- **Scrolling never lags.** `j` `k` for a line, `d` `u` for half a screen,
+  `space` for a full one, `g` `G` for the ends. Hold a key and it stays smooth
+  instead of falling behind and then lurching. The mouse wheel works too.
+- **You always know where you are.** The status bar shows the file, how far
+  through you are, and *which section you're currently inside* — not just a
+  percentage.
+- **Resize without losing your place.** Widen the window and you stay on the
+  paragraph you were reading.
 
-**Speed.** Layout runs once per document, not once per scroll. Everything after
-that is an array slice. Opening a file never waits for syntax highlighting.
+## What it does
 
-## Why not glow
+### Code you can actually read
 
-|  | glow | this |
-|---|---|---|
-| Scrolling a long file | re-renders the document each scroll | lays out once, then slices |
-| Cost per frame | grows with the document | **0.10 ms** on a 6,246-row document |
-| A held key | queues renders and falls behind | coalesced to one update per frame |
-| Resize | loses your place | re-anchors to the block you were reading |
-| Position | a percentage | percentage **and** the section you are inside |
-| Wide code | folds it | scrolls sideways over it |
-| Links | not followable | Tab to pick, Enter to open, Backspace to go back |
-| Wikilinks | no | `[[target\|label]]` and `[[target#heading]]` |
-| Reopening a file | at the top | where you left off |
-| Highlighting | Chroma | Shiki — the grammars and themes VS Code uses |
-| Wide characters | `String.length` in places | display cells throughout, property-tested |
+Syntax highlighting through [Shiki](https://shiki.style) — the same TextMate
+grammars and themes VS Code uses, so keywords, types, functions and strings are
+all distinct rather than uniformly coloured.
+
+![syntax highlighting](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/code.png)
+
+Press `y` to copy the code block on screen to your clipboard. It goes over
+OSC 52, so it works through SSH and inside tmux where `pbcopy` can't reach.
+
+### Find your way around
+
+`/` searches, `n` and `N` step through matches. Search is smartcase —
+lowercase matches anything, a capital means you meant it — and a hit lands a
+third of the way down the screen so you keep the context above it.
+
+![searching](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/search.png)
+
+`t` opens the table of contents. Pick a heading and jump straight to it.
+
+![table of contents](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/contents.png)
+
+### Nothing gets chopped
+
+A long command or a wide table is laid out at its full width, and `h` `l`
+move the viewport over it. Only the wide rows move — the prose around them stays
+exactly where you were reading it, so you never lose the sentence explaining the
+command. `‹` and `›` mark whichever edge continues.
+
+![horizontal scrolling](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/wide.png)
+
+### Links go somewhere
+
+`Tab` picks the next link and scrolls it into view, `Enter` follows it,
+`Backspace` goes back.
+
+- Relative paths open that file — `./guide.md`, `guide`, or a directory with
+  an `index.md` inside
+- `#anchors` jump to the heading, using the same slugs GitHub links with
+- `[[Wikilinks]]`, `[[target|label]]` and `[[target#heading]]` work, so an
+  Obsidian or Foam vault reads properly
+- External URLs are shown rather than opened — a pager that launches a browser
+  is a surprise, and they're already clickable via OSC 8
+
+### It remembers where you were
+
+Close a long document and reopen it later and you're back at the same place.
+What's stored is the *block*, not the line number, so it survives being reopened
+in a different-sized window. `--no-resume` opens at the top.
+
+### Light and dark
+
+Picked automatically from your terminal, or forced with `--theme`.
+
+![light theme](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/light.png)
+
+### Formats it doesn't parse
+
+`.org`, `.txt`, `.rst` and logs are shown verbatim rather than misread as
+markdown — Org's `*` headings aren't emphasis, and pretending otherwise
+misrepresents the file.
 
 ## Keys
 
@@ -57,29 +106,6 @@ backspace    go back               y            copy the code block on screen
 t            contents              r            reload from disk
 ?            all keys              q esc        quit
 ```
-
-Search is smartcase: lowercase matches anything, a capital means you meant it.
-A hit lands a third of the way down the screen rather than at the very top, so
-there is context above it.
-
-**Wide content scrolls, it doesn't get chopped.** A long command or a wide table
-is laid out at its natural width and the viewport moves over it, with `‹` and `›`
-at whichever edge continues. Only those rows move — the prose around them stays
-where you were reading it. `--wrap` gives you the folding behaviour instead.
-
-**Links go somewhere.** `Tab` picks the next link and scrolls it into view,
-`Enter` follows it. A relative path opens that file, `#anchors` jump to the
-heading, and `Backspace` walks back. `[[Wikilinks]]`, `[[target|label]]` and
-`[[target#heading]]` work too, so an Obsidian or Foam vault reads properly.
-External URLs are shown rather than opened — a pager that launches a browser is
-a surprise, and OSC 8 already makes them clickable.
-
-**It remembers where you were.** Reopening a file lands you back at the same
-place. What's stored is the *block*, not the row, so it survives being reopened
-in a different-sized window. `--no-resume` opens at the top.
-
-**`y` copies the code block on screen** over OSC 52, which works through SSH and
-inside tmux where `pbcopy` cannot reach your actual clipboard.
 
 ## Options
 
@@ -100,20 +126,46 @@ inside tmux where `pbcopy` cannot reach your actual clipboard.
 ## It behaves like a Unix tool
 
 ```sh
-folio README.md          # a pager
-folio README.md | cat    # plain text, no escape codes
+folio README.md            # a pager
+folio README.md | cat      # plain text, no escape codes
 FORCE_COLOR=3 folio R.md | less -R
-cat NOTES.md | folio     # still interactive, via /dev/tty
-folio --watch spec.md    # re-renders as you edit
+cat NOTES.md | folio       # still interactive, via /dev/tty
+folio --watch spec.md      # re-renders as you edit
 ```
 
 Exit status is 0 for success, 1 for a document that could not be read, 2 for bad
-usage. Piping in a document still opens a real pager: the content comes from
+usage. Piping a document in still opens a real pager: the content comes from
 stdin and the keyboard is borrowed from the controlling terminal.
 
-Formats it does not understand — `.org`, `.txt`, `.rst`, `.adoc`, a log — are
-shown verbatim rather than misread as markdown. Org's `*` headings are not
-emphasis, and pretending otherwise misrepresents the file.
+## Why not glow
+
+|  | glow | folio |
+|---|---|---|
+| Scrolling a long file | re-renders the document each scroll | lays out once, then slices |
+| Cost per frame | grows with the document | **0.10 ms** on a 6,246-row document |
+| A held key | queues renders and falls behind | coalesced to one update per frame |
+| Resize | loses your place | re-anchors to the block you were reading |
+| Position | a percentage | percentage **and** the section you are inside |
+| Wide code | folds it | scrolls sideways over it |
+| Links | not followable | Tab to pick, Enter to open, Backspace to go back |
+| Wikilinks | no | `[[target|label]]` and `[[target#heading]]` |
+| Reopening a file | at the top | where you left off |
+| Highlighting | Chroma | Shiki — the grammars and themes VS Code uses |
+
+## Design philosophy
+
+Three things, in this order, whenever they conflict.
+
+**Simplicity.** Seven runtime dependencies, no configuration file, no plugin
+system, no stash. It opens a file and shows it to you.
+
+**Clarity.** An 88-column text measure, hanging indents, real hierarchy, and
+colour used as a redundant signal rather than the only one. `NO_COLOR` output
+stays fully legible — headings keep their rules, tasks their boxes, code its
+frame.
+
+**Speed.** Layout runs once per document, not once per scroll. Opening a file
+never waits for syntax highlighting.
 
 ## How it works
 
@@ -125,9 +177,10 @@ source ──parse──▶ tokens ──layout──▶ Line[]   once, per (sou
                             offset ────┴──▶ compose ──▶ frame   per scroll
 ```
 
-`layoutDoc` is a pure function returning an array of fully-styled rows. Scrolling
-only changes an integer, and the Ink tree is one `Text` node per visible row — so
-a 6,246-row document costs exactly what a 30-row one costs. Measured on an M1:
+`layoutDoc` is a pure function returning an array of fully-styled rows.
+Scrolling only changes an integer, and the Ink tree is one `Text` node per
+visible row — so a 6,246-row document costs exactly what a 30-row one costs.
+Measured on an M1:
 
 | | |
 |---|---|
@@ -135,11 +188,14 @@ a 6,246-row document costs exactly what a 30-row one costs. Measured on an M1:
 | Compose one frame of it | 0.10 ms |
 | Ink drawing that frame | ~30 ms |
 
-Highlighting is the expensive part of layout, so the first frame is drawn without
-it and replaced when the grammars are ready. Only the languages a document
-actually uses are loaded.
+Highlighting is the expensive part of layout, so the first frame is drawn
+without it and replaced when the grammars are ready. Only the languages a
+document actually uses are loaded.
 
 ## Development
+
+See [AGENTS.md](AGENTS.md) for the working agreement, and
+[INVARIANTS.md](INVARIANTS.md) for the contract this is built against.
 
 ```sh
 npm test              # 192 unit and property tests
@@ -147,41 +203,8 @@ npm run lint && npm run typecheck && npm run build
 npm run verify:smoke  # the no-terminal paths
 npm run verify:pty    # a real pty: drive it, signal it, check what it restored
 npm run preview -- test/fixtures/kitchen-sink.md 100   # layout only, no TUI
-npm run preview:html  # real frames to docs/preview.html, for reviewing colour
+npm run screenshots   # regenerate docs/*.png from real frames
 ```
-
-### Releasing
-
-`npm version <patch|minor|major>`, push the tag, then cut a GitHub Release. The
-`publish` workflow runs the full verification, checks the tag matches
-`package.json`, and publishes.
-
-Authentication is npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)
-over OIDC — there is no `NPM_TOKEN` secret to store or rotate, and provenance is
-attested automatically from the workflow run.
-
-The trust relationship is registered once, with:
-
-```sh
-npm trust github --file publish.yml --allow-publish
-```
-
-The repository is read from `repository.url` in `package.json`, so it needs no
-flag. Two things about that command are worth knowing. It requires the package
-to already exist on the registry, so the very first release has to be published
-by hand; and the configuration is bound to the workflow's **filename**, so
-renaming `publish.yml` breaks publishing until the trust relationship is
-revoked and recreated.
-
-`INVARIANTS.md` is the contract: twenty-three numbered invariants, each with a
-test whose name starts with its number, so `npx vitest run -t "I-6"` runs exactly
-the resize-anchoring guard.
-
-Two things worth knowing if you hack on it. `bin` and `npm link` point at
-compiled output in `dist/`, so source edits do nothing until `npm run build`.
-And anything that needs to line up in a column has to live in a row's *lead*,
-not its body — the wrapper collapses runs of whitespace, so padding written into
-the text itself will not survive it.
 
 ## Licence
 
