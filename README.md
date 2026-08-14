@@ -159,6 +159,19 @@ Authentication is npm [trusted publishing](https://docs.npmjs.com/trusted-publis
 over OIDC — there is no `NPM_TOKEN` secret to store or rotate, and provenance is
 attested automatically from the workflow run.
 
+The trust relationship is registered once, with:
+
+```sh
+npm trust github --file publish.yml --allow-publish
+```
+
+The repository is read from `repository.url` in `package.json`, so it needs no
+flag. Two things about that command are worth knowing. It requires the package
+to already exist on the registry, so the very first release has to be published
+by hand; and the configuration is bound to the workflow's **filename**, so
+renaming `publish.yml` breaks publishing until the trust relationship is
+revoked and recreated.
+
 `INVARIANTS.md` is the contract: twenty-three numbered invariants, each with a
 test whose name starts with its number, so `npx vitest run -t "I-6"` runs exactly
 the resize-anchoring guard.
