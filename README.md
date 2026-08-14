@@ -1,5 +1,7 @@
 # folio
 
+[![ci](https://github.com/ziweiwu/folio/actions/workflows/ci.yml/badge.svg)](https://github.com/ziweiwu/folio/actions/workflows/ci.yml)
+
 Read markdown in your terminal, properly. Real typography, real syntax
 highlighting, and scrolling that keeps up with your keyboard.
 
