@@ -1,6 +1,6 @@
 {
   "name": "@ziweiwu/folio",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read markdown in your terminal, properly. Real typography, Shiki syntax highlighting, vim keys, search, a table of contents, link following, and scrolling that keeps up with your keyboard.",
   "type": "module",
   "bin": {
