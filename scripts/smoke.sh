@@ -6,7 +6,12 @@ cd "$(dirname "$0")/.."
 
 # Isolated for the same reason as the pty checks: nothing here should read or
 # write the state directory a real reader's positions live in. See I-24.
-STATE=$(mktemp -d -t umv-smoke)
+STATE=$(mktemp -d "${TMPDIR:-/tmp}/umv-smoke.XXXXXX")
+# Templated rather than `-t umv-smoke`, which only BSD mktemp accepts: GNU reads
+# the argument as a template and wants at least three X's. It used to fail
+# harmlessly here because $STATE was only ever XDG_STATE_HOME, but the checks
+# below now write files into it, and an empty $STATE aims those at /.
+[ -n "$STATE" ] && [ -d "$STATE" ] || { echo "smoke: could not create a temp dir" >&2; exit 1; }
 export XDG_STATE_HOME="$STATE"
 trap 'rm -rf "$STATE"' EXIT
 

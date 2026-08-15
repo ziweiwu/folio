@@ -9,12 +9,12 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 CMD=${1:-"npx tsx src/cli.tsx test/fixtures/kitchen-sink.md"}
-LOG=$(mktemp -t umv-pty)
+LOG=$(mktemp "${TMPDIR:-/tmp}/umv-pty.XXXXXX")
 
 # Hermetic: the viewer remembers where you were, so a check that inherited the
 # real state directory would open a previous run's position instead of the top
 # of the document — and pass or fail depending on what you last read. See I-24.
-STATE=$(mktemp -d -t umv-state)
+STATE=$(mktemp -d "${TMPDIR:-/tmp}/umv-state.XXXXXX")
 export XDG_STATE_HOME="$STATE"
 
 # Every viewer this script starts is a descendant of it, so a single sweep on
@@ -82,7 +82,7 @@ refute  "no unhandled error"                  "at Object."
 refute  "no React error boundary output"      "The above error occurred"
 
 echo "syntax highlighting arrives after first paint (I-14)"
-LOG3=$(mktemp -t umv-hl)
+LOG3=$(mktemp "${TMPDIR:-/tmp}/umv-hl.XXXXXX")
 { sleep 4; printf 'fff'; sleep 2; printf 'q'; sleep 2; } \
   | script -q "$LOG3" bash -c "npx tsx src/cli.tsx --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
 # A code-block background band and a Shiki token colour, neither of which the
@@ -99,11 +99,11 @@ echo "a link it cannot read (I-31)"
 # `stat` succeeding does not mean a file can be read. Following a link to a
 # mode-000 file used to throw out of the host's `open` callback, surface as an
 # unhandled rejection, and take the whole viewer down with a blank screen.
-LINKDIR=$(mktemp -d -t umv-link)
+LINKDIR=$(mktemp -d "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 printf '# Main\n\nGo to [secret](./secret.md) now.\n' > "$LINKDIR/main.md"
 printf '# Secret\n' > "$LINKDIR/secret.md"
 chmod 000 "$LINKDIR/secret.md"
-LOG4=$(mktemp -t umv-link)
+LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # Tab picks the link, Enter follows it. Then `?` opens the help overlay — which
 # only draws if the app is still running — and `q` quits.
 #
@@ -135,7 +135,7 @@ chmod 644 "$LINKDIR/secret.md"
 rm -rf "$LOG4" "$LINKDIR"
 
 echo "signal path"
-LOG2=$(mktemp -t umv-sig)
+LOG2=$(mktemp "${TMPDIR:-/tmp}/umv-sig.XXXXXX")
 # Job control, so the pipeline below becomes a process group of its own and its
 # group id is the pid we already have. Signalling that group reaches the app
 # inside `script` and nothing else.
