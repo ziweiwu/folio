@@ -13,25 +13,25 @@ const dark: Theme = {
 
   text: { fg: '#c0caf5' },
   muted: { fg: '#9aa5ce' },
-  faint: { fg: '#565f89' },
+  faint: { fg: '#8a92b8' },
 
   h1: { fg: '#16161e', bg: '#7aa2f7', bold: true },
   h2: { fg: '#7aa2f7', bold: true },
   h3: { fg: '#bb9af7', bold: true },
   h4: { fg: '#7dcfff', bold: true },
-  headingRule: { fg: '#3b4261' },
+  headingRule: { fg: '#606890' },
 
   strong: { fg: '#e6eaff', bold: true },
   em: { fg: '#c0caf5', italic: true },
-  strike: { fg: '#565f89', strike: true },
+  strike: { fg: '#8a92b8', strike: true },
 
   link: { fg: '#7dcfff', underline: true },
-  linkUrl: { fg: '#565f89' },
+  linkUrl: { fg: '#8a92b8' },
 
   codeBg: '#1c1f2e',
   codeText: { fg: '#a9b1d6', bg: '#1c1f2e' },
-  codeLabel: { fg: '#565f89', bg: '#1c1f2e', italic: true },
-  codeGutter: { fg: '#3b4261', bg: '#1c1f2e' },
+  codeLabel: { fg: '#8a92b8', bg: '#1c1f2e', italic: true },
+  codeGutter: { fg: '#7e87b0', bg: '#1c1f2e' },
   inlineCode: { fg: '#ff9e64', bg: '#24283b' },
 
   quoteBar: { fg: '#7aa2f7' },
@@ -39,19 +39,19 @@ const dark: Theme = {
 
   listMarker: { fg: '#7aa2f7' },
   taskDone: { fg: '#9ece6a' },
-  taskTodo: { fg: '#565f89' },
+  taskTodo: { fg: '#8a92b8' },
 
-  tableBorder: { fg: '#3b4261' },
+  tableBorder: { fg: '#606890' },
   tableHeader: { fg: '#7aa2f7', bold: true },
 
-  rule: { fg: '#3b4261' },
+  rule: { fg: '#606890' },
   image: { fg: '#bb9af7' },
   frontMatterKey: { fg: '#7aa2f7' },
   frontMatterValue: { fg: '#9aa5ce' },
 
   status: { fg: '#a9b1d6', bg: '#24283b' },
   statusAccent: { fg: '#7aa2f7', bg: '#24283b', bold: true },
-  statusMuted: { fg: '#565f89', bg: '#24283b' },
+  statusMuted: { fg: '#8a92b8', bg: '#24283b' },
 
   scrollTrack: { fg: '#292e42' },
   scrollThumb: { fg: '#7aa2f7' },
@@ -70,25 +70,25 @@ const light: Theme = {
 
   text: { fg: '#24292f' },
   muted: { fg: '#57606a' },
-  faint: { fg: '#8c959f' },
+  faint: { fg: '#616a73' },
 
   h1: { fg: '#ffffff', bg: '#0969da', bold: true },
   h2: { fg: '#0969da', bold: true },
   h3: { fg: '#8250df', bold: true },
   h4: { fg: '#1f6feb', bold: true },
-  headingRule: { fg: '#d0d7de' },
+  headingRule: { fg: '#8a94a0' },
 
   strong: { fg: '#0d1117', bold: true },
   em: { fg: '#24292f', italic: true },
-  strike: { fg: '#8c959f', strike: true },
+  strike: { fg: '#616a73', strike: true },
 
   link: { fg: '#0969da', underline: true },
-  linkUrl: { fg: '#8c959f' },
+  linkUrl: { fg: '#616a73' },
 
   codeBg: '#f3f5f8',
   codeText: { fg: '#24292f', bg: '#f3f5f8' },
-  codeLabel: { fg: '#8c959f', bg: '#f3f5f8', italic: true },
-  codeGutter: { fg: '#c3ccd6', bg: '#f3f5f8' },
+  codeLabel: { fg: '#616a73', bg: '#f3f5f8', italic: true },
+  codeGutter: { fg: '#666e76', bg: '#f3f5f8' },
   inlineCode: { fg: '#cf222e', bg: '#eff1f3' },
 
   quoteBar: { fg: '#0969da' },
@@ -96,19 +96,19 @@ const light: Theme = {
 
   listMarker: { fg: '#0969da' },
   taskDone: { fg: '#1a7f37' },
-  taskTodo: { fg: '#8c959f' },
+  taskTodo: { fg: '#616a73' },
 
-  tableBorder: { fg: '#d0d7de' },
+  tableBorder: { fg: '#8a94a0' },
   tableHeader: { fg: '#0969da', bold: true },
 
-  rule: { fg: '#d0d7de' },
+  rule: { fg: '#8a94a0' },
   image: { fg: '#8250df' },
   frontMatterKey: { fg: '#0969da' },
   frontMatterValue: { fg: '#57606a' },
 
   status: { fg: '#24292f', bg: '#eaeef2' },
-  statusAccent: { fg: '#0969da', bg: '#eaeef2', bold: true },
-  statusMuted: { fg: '#8c959f', bg: '#eaeef2' },
+  statusAccent: { fg: '#0860ca', bg: '#eaeef2', bold: true },
+  statusMuted: { fg: '#616a73', bg: '#eaeef2' },
 
   scrollTrack: { fg: '#e4e8ed' },
   scrollThumb: { fg: '#0969da' },

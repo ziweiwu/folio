@@ -20,11 +20,16 @@ export function overlayRows(
     const y = top + i;
     if (y < 0 || y >= out.length) return;
     const row = out[y]!;
-    const paneWidth = ansiWidth(paneRow);
-    const right = left + paneWidth;
+    /* Clipped to what is actually on screen. A pane is sized from the terminal,
+       but the terminal can be narrower than the smallest drawable box, and a
+       composed row that overruns the frame wraps and shears the whole display.
+       The frame's width is the one thing that is never negotiable. */
+    const start = Math.max(0, Math.min(left, width));
+    const cut = ansiWidth(paneRow) > width - start ? sliceAnsi(paneRow, 0, width - start) : paneRow;
+    const right = start + ansiWidth(cut);
     out[y] =
-      sliceAnsi(row, 0, left) +
-      paneRow +
+      sliceAnsi(row, 0, start) +
+      cut +
       (right < width ? sliceAnsi(padAnsi(row, width, {}, level), right, width) : '');
   });
   return out;

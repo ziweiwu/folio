@@ -16,6 +16,12 @@ const SHOW_CURSOR = '\x1b[?25h';
  *  SGR encoding, which is the only one that survives past column 223. */
 const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
 const MOUSE_OFF = '\x1b[?1006l\x1b[?1000l';
+/** The viewer always asks for bracketed paste (see I-35), but it asks through
+ *  Ink, which only turns it off again when React unmounts. A signal handler
+ *  exits before that happens, so the mode has to be restored here or the
+ *  reader's shell is left wrapping every paste in `\e[200~`. Turning off a mode
+ *  that was never on is a no-op, so this stays unconditional. */
+const PASTE_OFF = '\x1b[?2004l';
 
 type Screen = { out: NodeJS.WriteStream; mouse: boolean };
 
@@ -34,7 +40,7 @@ export function leaveScreen(): void {
   const screen = current;
   if (!screen) return;
   current = null;
-  screen.out.write((screen.mouse ? MOUSE_OFF : '') + SHOW_CURSOR + LEAVE_ALT);
+  screen.out.write((screen.mouse ? MOUSE_OFF : '') + PASTE_OFF + SHOW_CURSOR + LEAVE_ALT);
 }
 
 export function isScreenActive(): boolean {

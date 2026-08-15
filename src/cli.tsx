@@ -5,12 +5,13 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ReadStream } from 'node:tty';
 import { render } from 'ink';
-import { detectColorLevel, type ColorLevel } from './core/ansi.js';
+import { ansiWidth, detectColorLevel, paint, sliceAnsi, type ColorLevel } from './core/ansi.js';
 import { parseArgs, type Options } from './core/options.js';
 import { layoutDoc } from './md/layout.js';
 import { isMarkdownPath, layoutText } from './md/text.js';
 import { collectLanguages, createHighlighter } from './md/highlight.js';
 import { EMPTY, parsePositions, recall, remember, type Positions } from './core/positions.js';
+import { sanitizeLine } from './core/sanitize.js';
 import { enterScreen, leaveScreen } from './ui/screen.js';
 import { pickTheme } from './ui/theme.js';
 import { App, type Source } from './app.js';
@@ -123,17 +124,28 @@ function printOneShot(
   markdown: boolean,
 ): void {
   const layout = markdown ? layoutDoc : layoutText;
+  const width = process.stdout.columns || 80;
+  const theme = pickTheme(themeName);
   const doc = layout(source.text, {
-    width: process.stdout.columns || 80,
+    width,
     maxWidth: options.maxWidth,
-    theme: pickTheme(themeName),
+    theme,
     level,
     lineNumbers: options.lineNumbers,
     links: options.links,
     overflow: 'wrap',
     highlight: source.highlight,
   });
-  process.stdout.write(doc.lines.map((l) => l.ansi).join('\n') + (doc.lines.length > 0 ? '\n' : ''));
+  /* The viewport is what guarantees the frame's width in the interactive path;
+     one-shot has no viewport, so it clamps here. Without this a table with
+     enough columns to defeat the column solver printed rows wider than the
+     terminal, straight into a pipe. See I-1, I-26. */
+  const cutMark = paint('\u203a', theme.faint, level);
+  const fit = (row: string): string =>
+    ansiWidth(row) <= width ? row : sliceAnsi(row, 0, Math.max(0, width - 1)) + cutMark;
+  process.stdout.write(
+    doc.lines.map((l) => fit(l.ansi)).join('\n') + (doc.lines.length > 0 ? '\n' : ''),
+  );
 }
 
 /**
@@ -191,7 +203,33 @@ function savePositions(store: Positions): void {
   }
 }
 
+/**
+ * A reader that stops reading is not an error.
+ *
+ * `folio doc.md | head -1` closes the pipe as soon as it has its line, and the
+ * write still in flight then fails with EPIPE. Node's default for an unhandled
+ * stream error is to throw, so composing with `head` — which this tool
+ * advertises — printed a stack trace and exited 1. Downstream leaving early is
+ * ordinary Unix behaviour and means the job is done. Any *other* write error is
+ * still a real failure and still reported. See I-17, I-32.
+ */
+function tolerateClosedPipe(): void {
+  // Diagnostics are best-effort: stderr can be closed too, and a viewer that
+  // dies trying to report that it could not report something is no use.
+  process.stderr.on('error', () => {});
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(0);
+    try {
+      process.stderr.write(`folio: ${err.message}\n`);
+    } catch {
+      // Nothing left to say it to.
+    }
+    process.exit(1);
+  });
+}
+
 async function main(): Promise<void> {
+  tolerateClosedPipe();
   const parsed = parseArgs(process.argv.slice(2));
   if (!parsed.ok) fail(parsed.message, parsed.code);
   const options = parsed.options;
@@ -219,7 +257,9 @@ async function main(): Promise<void> {
         1,
       );
     }
-    name = basename(options.file);
+    /* A file can be *named* with an escape sequence, and the status bar
+       prints the name it is given. See I-29. */
+    name = sanitizeLine(basename(options.file));
   } else if (!process.stdin.isTTY) {
     text = await readStdin();
     name = 'stdin';
@@ -269,6 +309,9 @@ async function main(): Promise<void> {
     : async (target: string) => {
         const found = firstReadable(candidates(target, currentDir!));
         if (found === null) return null;
+        /* `stat` succeeding does not mean the file can be read — a mode-000
+           file stats perfectly well. Nothing below this line runs unless the
+           read worked, so a failure leaves the viewer exactly where it was. */
         const body = readFileSync(found, 'utf8');
         const asMarkdown = options.markdown ?? isMarkdownPath(found);
         if (currentFile !== null) {
@@ -279,7 +322,7 @@ async function main(): Promise<void> {
         currentBlock = 0;
         return {
           source: asMarkdown ? await makeSource(body, theme.shiki, level) : { text: body },
-          name: basename(found),
+          name: sanitizeLine(basename(found)),
           markdown: asMarkdown,
         };
       };

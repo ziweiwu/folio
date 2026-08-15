@@ -102,7 +102,7 @@ export async function renderFrame(spec: Spec): Promise<{ rows: string[]; theme: 
   if (spec.overlay) {
     const pane = spec.overlay === 'toc'
       ? tocPane(doc, 4, spec.cols, height, theme, spec.level)
-      : helpPane(spec.cols, theme, spec.level);
+      : helpPane(spec.cols, height, theme, spec.level);
     const at = centre(pane.width, pane.height, spec.cols, height);
     rows = overlayRows(rows, pane.rows, at.top, at.left, spec.cols, spec.level);
   }

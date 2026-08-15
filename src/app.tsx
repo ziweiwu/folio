@@ -1,13 +1,13 @@
-import { Box, Text, useApp, useInput, useStdin, useStdout } from 'ink';
+import { Box, Text, useApp, useInput, usePaste, useStdin, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ColorLevel } from './core/ansi.js';
 import type { HighlightFn, Theme } from './core/types.js';
 import type { Options } from './core/options.js';
-import { parseBurst } from './core/keys.js';
+import { splitBurst } from './core/keys.js';
 import { osc52 } from './core/clipboard.js';
 import { classifyLink, findAnchor } from './core/links.js';
 import { anchorOffset } from './core/position.js';
-import { findMatches, highlightRow, nextMatch, type Highlight, type Match } from './core/search.js';
+import { findMatches, highlightRow, nextMatch, stepMatch, type Highlight, type Match } from './core/search.js';
 import { useScroll } from './hooks/useScroll.js';
 import { isMouseSequence, useMouse } from './hooks/useMouse.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
@@ -61,6 +61,54 @@ export type AppProps = {
 
 type Mode = 'doc' | 'search' | 'toc' | 'help';
 
+/** What Ink tells us about a keystroke, and what we synthesise for one. */
+type Keys = {
+  escape: boolean;
+  return: boolean;
+  backspace: boolean;
+  delete: boolean;
+  tab: boolean;
+  shift: boolean;
+  ctrl: boolean;
+  meta: boolean;
+  upArrow: boolean;
+  downArrow: boolean;
+  leftArrow: boolean;
+  rightArrow: boolean;
+  pageUp: boolean;
+  pageDown: boolean;
+};
+
+const NO_KEYS: Keys = {
+  escape: false,
+  return: false,
+  backspace: false,
+  delete: false,
+  tab: false,
+  shift: false,
+  ctrl: false,
+  meta: false,
+  upArrow: false,
+  downArrow: false,
+  leftArrow: false,
+  rightArrow: false,
+  pageUp: false,
+  pageDown: false,
+};
+
+/**
+ * The flags for one keystroke taken out of a chunk.
+ *
+ * Ink's own flags describe the whole read, so they say nothing useful about a
+ * keystroke in the middle of one: `cat⏎` sets `return` on nothing. Only the
+ * two keys Ink leaves inside a text run need synthesising — the rest are
+ * ordinary characters, and an escape sequence is never split in the first
+ * place.
+ */
+function keysFor(ch: string): Keys {
+  return { ...NO_KEYS, return: ch === '\r' || ch === '\n', tab: ch === '\t' };
+}
+
 export function App({ initial, name, options, theme, level, mouse, reload, watch, upgrade, markdown = true, overflow, open, startBlock = null, onPosition }: AppProps) {
   const { exit } = useApp();
   const { stdin } = useStdin();
@@ -77,9 +125,49 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   const [matchIndex, setMatchIndex] = useState(-1);
   const [tocIndex, setTocIndex] = useState(0);
   const [hOffset, setHOffset] = useState(0);
+
+  /* The key handler decides what a keystroke means from `mode`, `query` and
+     the two cursors. Read from state, those are whatever React last rendered —
+     and two keystrokes can land in one tick, before any re-render. `/cat`
+     followed immediately by `q` then read `mode` as `doc` and *quit* instead of
+     typing a `q`. So the handler branches on refs, which are current the
+     instant a keystroke changes them, and the state exists to render with.
+     Anything updated through a `setX(prev => …)` callback is already safe and
+     is left alone. */
+  const modeRef = useRef<Mode>(mode);
+  const queryRef = useRef(query);
+  const committedRef = useRef(committed);
+  const matchIndexRef = useRef(matchIndex);
+  const linkIndexRef = useRef(linkIndex);
+  const tocIndexRef = useRef(tocIndex);
   const back = useRef<Array<{ source: Source; title: string; offset: number; markdown: boolean }>>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+
+  const enterMode = useCallback((next: Mode) => {
+    modeRef.current = next;
+    setMode(next);
+  }, []);
+  const putQuery = useCallback((next: string) => {
+    queryRef.current = next;
+    setQuery(next);
+  }, []);
+  const putCommitted = useCallback((next: string) => {
+    committedRef.current = next;
+    setCommitted(next);
+  }, []);
+  const putMatchIndex = useCallback((next: number) => {
+    matchIndexRef.current = next;
+    setMatchIndex(next);
+  }, []);
+  const putLinkIndex = useCallback((next: number) => {
+    linkIndexRef.current = next;
+    setLinkIndex(next);
+  }, []);
+  const putTocIndex = useCallback((next: number) => {
+    tocIndexRef.current = next;
+    setTocIndex(next);
+  }, []);
 
   // The status bar owns the last row; the scrollbar owns the last column.
   const height = Math.max(1, rows - 1);
@@ -167,10 +255,24 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     (index: number, list: readonly Match[]) => {
       if (list.length === 0) return;
       const wrapped = ((index % list.length) + list.length) % list.length;
-      setMatchIndex(wrapped);
+      putMatchIndex(wrapped);
       revealLine(list[wrapped]!.line);
     },
-    [revealLine],
+    [revealLine, putMatchIndex],
+  );
+
+  /** Run the query and leave the prompt, seeding the cursor from the viewport. */
+  const commitSearch = useCallback(
+    (q: string) => {
+      putCommitted(q);
+      enterMode('doc');
+      // A new search starts from what is on screen, not from the old cursor.
+      putMatchIndex(-1);
+      const found = findMatches(doc.lines, q);
+      if (found.length === 0) setStatus(q === '' ? null : `no match for "${q}"`);
+      else jumpToMatch(nextMatch(found, offset - 1, false), found);
+    },
+    [doc, offset, jumpToMatch, putCommitted, enterMode, putMatchIndex],
   );
 
   const goTo = useCallback(
@@ -179,14 +281,14 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
       setSource(next.source);
       setTitle(next.name);
       setParseAsMarkdown(next.markdown);
-      setLinkIndex(-1);
+      putLinkIndex(-1);
       setHOffset(0);
       // The anchor is resolved on the next document, which has not been laid
       // out yet, so it is handed to an effect rather than applied here.
       setPendingAnchor(anchor);
       scrollTo(0);
     },
-    [source, title, offset, parseAsMarkdown, scrollTo],
+    [source, title, offset, parseAsMarkdown, scrollTo, putLinkIndex],
   );
 
   const follow = useCallback(
@@ -209,7 +311,18 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         setStatus('cannot follow a file link when reading from stdin');
         return;
       }
-      const next = await open(link.path);
+      /* `open` reaches the filesystem, and the filesystem can say no after it
+         has already said yes: a file that stats fine may still be unreadable,
+         or may be removed between the two calls. A rejection here would leave
+         React with nothing to render and take the whole viewer down, so a
+         failure to follow a link is reported the way every other one is. */
+      let next: Awaited<ReturnType<NonNullable<typeof open>>>;
+      try {
+        next = await open(link.path);
+      } catch (err) {
+        setStatus(`${link.path}: ${(err as Error).message}`);
+        return;
+      }
       if (!next) setStatus(`${link.path}: not found`);
       else goTo(next, link.anchor, true);
     },
@@ -225,18 +338,28 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     setSource(prev.source);
     setTitle(prev.title);
     setParseAsMarkdown(prev.markdown);
-    setLinkIndex(-1);
+    putLinkIndex(-1);
     setHOffset(0);
     scrollTo(prev.offset);
-  }, [scrollTo]);
+  }, [scrollTo, putLinkIndex]);
 
+  /* Reloads are not ordered by the disk. An editor that writes a file twice on
+     one save fires two changes, and nothing guarantees the first read resolves
+     before the second — so without a generation the older content can land last
+     and win, leaving the reader looking at stale text under a "reloaded" note.
+     Only the newest reload is allowed to speak. */
+  const reloadGeneration = useRef(0);
   const doReload = useCallback(async () => {
     if (!reload) return;
+    const generation = ++reloadGeneration.current;
     setStatus('reloading…');
     try {
-      setSource(await reload());
+      const next = await reload();
+      if (generation !== reloadGeneration.current) return;
+      setSource(next);
       setStatus('reloaded');
     } catch (err) {
+      if (generation !== reloadGeneration.current) return;
       setStatus(`could not reload: ${(err as Error).message}`);
     }
   }, [reload]);
@@ -252,9 +375,15 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   useEffect(() => {
     if (!upgrade) return;
     let live = true;
-    void upgrade().then((next) => {
-      if (live) setSource(next);
-    });
+    /* Highlighting is an enhancement on a document that is already readable on
+       screen. If building it fails there is nothing to tell the reader and
+       nothing to do — but an unhandled rejection would still take the app
+       down, so it is swallowed deliberately rather than by omission. */
+    void upgrade()
+      .then((next) => {
+        if (live) setSource(next);
+      })
+      .catch(() => {});
     return () => {
       live = false;
     };
@@ -273,39 +402,87 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     return () => clearTimeout(t);
   }, [status]);
 
-  useInput((raw, key) => {
-    // Mouse reports reach Ink's key parser too; without this a scroll would
-    // register as a burst of keystrokes.
-    if (isMouseSequence(raw)) return;
+  /**
+   * The viewport moves, and nothing else. Kept separate from the key handler
+   * so a burst of several motion keys can be replayed through it in order.
+   */
+  const applyMotion = useCallback(
+    (motion: string, repeat: number) => {
+      switch (motion) {
+        case 'j': scrollBy(repeat); return;
+        case 'k': scrollBy(-repeat); return;
+        case 'd': scrollBy(Math.floor(height / 2) * repeat); return;
+        case 'u': scrollBy(-Math.floor(height / 2) * repeat); return;
+        case 'f': case ' ': scrollBy((height - 2) * repeat); return;
+        case 'b': scrollBy(-(height - 2) * repeat); return;
+        case 'g': scrollTo(0); setHOffset(0); return;
+        case 'G': scrollTo(doc.lines.length); setHOffset(0); return;
+        case 'h': setHOffset((x) => Math.max(0, x - H_STEP * repeat)); return;
+        case 'l': setHOffset((x) => Math.min(maxH, x + H_STEP * repeat)); return;
+        case '0': setHOffset(0); return;
+        default:
+      }
+    },
+    [scrollBy, scrollTo, height, doc.lines.length, maxH],
+  );
 
-    if (mode === 'search') {
+  /**
+   * One keystroke, whether it arrived alone or as part of a chunk.
+   *
+   * `key` describes the chunk Ink read. When the chunk held several keys it is
+   * synthesised per keystroke instead, because Ink's flags describe the whole
+   * read — `cat⏎` sets neither `return` nor anything else useful.
+   */
+  const press = useCallback((input: string, repeat: number, key: Keys) => {
+    if (modeRef.current === 'search') {
       if (key.escape) {
-        setMode('doc');
-        setQuery(committed);
+        enterMode('doc');
+        putQuery(committedRef.current);
         return;
       }
       if (key.return) {
-        setCommitted(query);
-        setMode('doc');
-        const found = findMatches(doc.lines, query);
-        if (found.length === 0) setStatus(query === '' ? null : `no match for "${query}"`);
-        else jumpToMatch(nextMatch(found, offset - 1, false), found);
+        commitSearch(queryRef.current);
         return;
       }
       if (key.backspace || key.delete) {
-        setQuery((q) => q.slice(0, -1));
+        putQuery(queryRef.current.slice(0, -1));
         return;
       }
-      if (raw && !key.ctrl && !key.meta) setQuery((q) => q + raw);
+      /* Only printable text reaches the query. An arrow key or any other
+         sequence arrives as raw bytes too, and appending those would type an
+         escape sequence into the prompt and search the document for it. */
+      if (input && !key.ctrl && !key.meta) {
+        const typed = [...input].filter((c) => c >= ' ' && c !== '\u007f').join('');
+        if (typed) putQuery(queryRef.current + typed.repeat(repeat));
+      }
       return;
     }
 
-    /* A held key arrives as one chunk, so `jjjj` is four lines, not one
-       unrecognised keystroke. Search mode is exempt: there a burst really is
-       the text the user typed. */
-    const { key: input, repeat } = parseBurst(raw, key);
+    /** Move the link cursor, wrapping, starting from what is on screen. */
+    const stepLink = (step: number, times: number) => {
+      if (links.length === 0) {
+        setStatus('no links in this document');
+        return;
+      }
+      /* With nothing picked yet the first press lands on a link that is on
+         screen, and only the presses after it step — so `⇥⇥` selects the
+         second link, exactly as two separate presses would. */
+      const from =
+        linkIndexRef.current >= 0
+          ? linkIndexRef.current + step * times
+          : (step > 0 ? Math.max(0, links.findIndex((l) => l.row >= offset)) : links.length - 1) +
+            step * (times - 1);
+      const at = ((from % links.length) + links.length) % links.length;
+      putLinkIndex(at);
+      revealLine(links[at]!.row);
+    };
+    const followSelected = () => {
+      const link = links[linkIndexRef.current];
+      if (!link) setStatus('press tab to pick a link first');
+      else void follow(link.href);
+    };
 
-    if (mode === 'toc') {
+    if (modeRef.current === 'toc') {
       // q quits from anywhere. An overlay that swallowed it would make the one
       // key everybody already knows mean two different things.
       if (input === 'q') {
@@ -313,25 +490,39 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         return;
       }
       if (key.escape || input === 't') {
-        setMode('doc');
+        enterMode('doc');
         return;
       }
-      if (key.return) {
-        setMode('doc');
-        const entry = doc.toc[tocIndex];
+      /* Read back from the ref, not through a `setTocIndex(i => …)` callback:
+         the callback is correct for what is rendered, but the Enter that picks
+         a heading reads the index synchronously, and four `j`s and a Return in
+         one burst would otherwise all see the index from the last frame. */
+      const move = (which: string, by: number) => {
+        if (which === 'j') putTocIndex(Math.min(tocIndexRef.current + by, doc.toc.length - 1));
+        else if (which === 'k') putTocIndex(Math.max(tocIndexRef.current - by, 0));
+        else if (which === 'g') putTocIndex(0);
+        else if (which === 'G') putTocIndex(Math.max(0, doc.toc.length - 1));
+      };
+      const pick = () => {
+        enterMode('doc');
+        const entry = doc.toc[tocIndexRef.current];
         if (entry) scrollTo(Math.max(0, entry.line - 1));
+      };
+
+      if (key.return) {
+        pick();
         return;
       }
-      if (input === 'j' || key.downArrow) setTocIndex((i) => Math.min(i + repeat, doc.toc.length - 1));
-      if (input === 'k' || key.upArrow) setTocIndex((i) => Math.max(i - repeat, 0));
-      if (input === 'g' || key.pageUp) setTocIndex(0);
-      if (input === 'G' || key.pageDown) setTocIndex(Math.max(0, doc.toc.length - 1));
+      if (input === 'j' || key.downArrow) move('j', repeat);
+      if (input === 'k' || key.upArrow) move('k', repeat);
+      if (input === 'g' || key.pageUp) move('g', repeat);
+      if (input === 'G' || key.pageDown) move('G', repeat);
       return;
     }
 
-    if (mode === 'help') {
+    if (modeRef.current === 'help') {
       if (input === 'q') quit();
-      else setMode('doc');
+      else enterMode('doc');
       return;
     }
 
@@ -339,87 +530,86 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
       case input === 'q' || key.escape || (key.ctrl && input === 'c'):
         quit();
         return;
+      // Motion goes through one place, so a burst and a single press cannot
+      // drift apart.
       case input === 'j' || key.downArrow:
-        scrollBy(repeat);
+        applyMotion('j', repeat);
         return;
       case input === 'k' || key.upArrow:
-        scrollBy(-repeat);
+        applyMotion('k', repeat);
         return;
       case input === 'd' || (key.ctrl && input === 'd'):
-        scrollBy(Math.floor(height / 2) * repeat);
+        applyMotion('d', repeat);
         return;
       case input === 'u' || (key.ctrl && input === 'u'):
-        scrollBy(-Math.floor(height / 2) * repeat);
+        applyMotion('u', repeat);
         return;
       case input === 'f' || input === ' ' || key.pageDown || (key.ctrl && input === 'f'):
-        scrollBy((height - 2) * repeat);
+        applyMotion('f', repeat);
         return;
       case input === 'b' || key.pageUp || (key.ctrl && input === 'b'):
-        scrollBy(-(height - 2) * repeat);
+        applyMotion('b', repeat);
         return;
       case input === 'h' || key.leftArrow:
-        setHOffset((x) => Math.max(0, x - H_STEP * repeat));
+        applyMotion('h', repeat);
         return;
       case input === 'l' || key.rightArrow:
-        setHOffset((x) => Math.min(maxH, x + H_STEP * repeat));
+        applyMotion('l', repeat);
         return;
       case input === '0':
-        setHOffset(0);
+        applyMotion('0', repeat);
         return;
       case input === 'g':
-        scrollTo(0);
-        setHOffset(0);
+        applyMotion('g', repeat);
         return;
       case input === 'G':
-        scrollTo(doc.lines.length);
-        setHOffset(0);
+        applyMotion('G', repeat);
         return;
-      case key.tab: {
-        if (links.length === 0) {
-          setStatus('no links in this document');
-          return;
-        }
-        // Start from what is on screen rather than from the top of the file,
-        // so Tab picks up where the reader is looking.
-        const step = key.shift ? -1 : 1;
-        const from =
-          linkIndex >= 0
-            ? linkIndex + step * repeat
-            : step > 0
-              ? Math.max(0, links.findIndex((l) => l.row >= offset))
-              : links.length - 1;
-        const at = ((from % links.length) + links.length) % links.length;
-        setLinkIndex(at);
-        revealLine(links[at]!.row);
+      case key.tab:
+        stepLink(key.shift ? -1 : 1, repeat);
         return;
-      }
-      case key.return: {
-        const link = links[linkIndex];
-        if (!link) setStatus('press tab to pick a link first');
-        else void follow(link.href);
+      case key.return:
+        followSelected();
         return;
-      }
       case key.backspace || key.delete:
         goBack();
         return;
       case input === '/':
-        setQuery('');
-        setMode('search');
+        putQuery('');
+        enterMode('search');
         return;
-      case input === 'n':
-        if (matches.length === 0) setStatus('nothing to search for yet');
-        else jumpToMatch(nextMatch(matches, offset, false), matches);
+      /* Stepping is by match, not by row. Seeded from the viewport the first
+         time, so `n` starts from what the reader is looking at, and by index
+         thereafter, so every hit is reachable and none is visited twice. */
+      case input === 'n' || input === 'N': {
+        /* `matches` is memoised on the *rendered* query. A search committed in
+           this same tick has not been rendered yet, so the memo would still be
+           the previous query's — and `n` straight after `/cat` and Enter would
+           report having nothing to search for while sitting on a match. */
+        const live = committedRef.current === committed
+          ? matches
+          : findMatches(doc.lines, committedRef.current);
+        if (live.length === 0) {
+          setStatus('nothing to search for yet');
+          return;
+        }
+        const backwards = input === 'N';
+        // A held `n` walks that many matches, the same as pressing it that
+        // many times — I-15 applies here as much as it does to scrolling.
+        let at =
+          matchIndexRef.current < 0
+            ? nextMatch(live, offset, backwards)
+            : stepMatch(live, matchIndexRef.current, backwards);
+        for (let i = 1; i < repeat; i++) at = stepMatch(live, at, backwards);
+        jumpToMatch(at, live);
         return;
-      case input === 'N':
-        if (matches.length === 0) setStatus('nothing to search for yet');
-        else jumpToMatch(nextMatch(matches, offset, true), matches);
-        return;
+      }
       case input === 't':
-        setTocIndex(Math.max(0, doc.toc.findIndex((e) => e.line > offset) - 1));
-        setMode('toc');
+        putTocIndex(Math.max(0, doc.toc.findIndex((e) => e.line > offset) - 1));
+        enterMode('toc');
         return;
       case input === '?':
-        setMode('help');
+        enterMode('help');
         return;
       case input === 'y': {
         // The block you can see is the block you meant. Several visible, the
@@ -445,6 +635,52 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         return;
       default:
     }
+  }, [
+    doc, links, offset, height, quit, scrollTo, applyMotion, revealLine, follow, goBack,
+    doReload, commitSearch, jumpToMatch, matches, committed, stdout, enterMode, putQuery,
+    putLinkIndex, putTocIndex,
+  ]);
+
+  /**
+   * Pasted text is content, never commands.
+   *
+   * A chunk of plain characters is otherwise indistinguishable from very fast
+   * typing, and the handler replays it as keystrokes — so pasting an ordinary
+   * sentence would run every letter of it as a command, and the `q` in "quick"
+   * would quit. Bracketed paste is what lets the terminal say which is which;
+   * asking for it puts paste on its own channel, and `useInput` then only ever
+   * sees keys the reader actually pressed. See I-35.
+   */
+  usePaste((text) => {
+    // In the search box a paste is exactly what the reader wants: a query.
+    if (modeRef.current === 'search') {
+      const typed = [...text].filter((c) => c >= ' ' && c !== '\u007f').join('');
+      if (typed) putQuery(queryRef.current + typed);
+      return;
+    }
+    // Anywhere else there is nothing a document viewer can do with it, and
+    // running it as commands is the one thing it must not do.
+    setStatus('pasted text ignored — press / to search for it');
+  });
+
+  useInput((raw, key) => {
+    // Mouse reports reach Ink's key parser too; without this a scroll would
+    // register as a burst of keystrokes.
+    if (isMouseSequence(raw)) return;
+
+    /* A chunk of ordinary keys is the keystrokes it stands for, applied in
+       order — `jjjj`, `jd`, `/cat⏎`, `⇥⏎`, `tjjjj⏎`. Ink cannot split these
+       itself: it deliberately leaves `⇥` and `⏎` inside a text run because
+       both occur in pasted text, and it has no way to know that `t` means
+       something to this app. Doing it here is safe because every value the
+       handler branches on is a ref, so a key that changes the mode is visible
+       to the key after it. See I-15, I-34. */
+    const segments = splitBurst(raw, key);
+    if (segments.length === 1 && segments[0]!.key === raw) {
+      press(raw, segments[0]!.repeat, key);
+      return;
+    }
+    for (const segment of segments) press(segment.key, segment.repeat, keysFor(segment.key));
   });
 
   const selected = links[linkIndex];
@@ -478,7 +714,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   );
 
   if (mode === 'toc' || mode === 'help') {
-    const pane = mode === 'toc' ? tocPane(doc, tocIndex, columns, height, theme, level) : helpPane(columns, theme, level);
+    const pane = mode === 'toc' ? tocPane(doc, tocIndex, columns, height, theme, level) : helpPane(columns, height, theme, level);
     const at = centre(pane.width, pane.height, columns, height);
     frame = overlayRows(frame, pane.rows, at.top, at.left, columns, level);
   }
@@ -490,7 +726,8 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
           {
             message: status,
             name: title,
-            section: hOffset > 0 ? `↔ ${hOffset}` : sectionAt(doc, offset),
+            section: sectionAt(doc, offset),
+            state: hOffset > 0 ? `↔ ${hOffset}` : null,
             offset,
             height,
             total: doc.lines.length,

@@ -51,6 +51,65 @@ else
   bad "wraps to 80 columns when there is no terminal"
 fi
 
+# A table with more columns than the frame can hold defeats the column solver:
+# the frame alone costs three cells per column, so shrinking cannot save it.
+# The interactive path is protected by the viewport; printing has no viewport
+# and has to clamp at the write. See I-30.
+WIDE_TABLE="$STATE/wide-table.md"
+{
+  head=''; sep=''; row=''
+  for i in $(seq 0 14); do head="$head|c$i"; sep="$sep|---"; row="$row|$i"; done
+  printf '%s|\n%s|\n%s|\n' "$head" "$sep" "$row"
+} > "$WIDE_TABLE"
+if $RUN --plain "$WIDE_TABLE" </dev/null | python3 -c 'import sys; sys.exit(0 if max((len(l) for l in sys.stdin.read().split("\n")), default=0) <= 80 else 1)'; then
+  ok "clamps a table too wide to fit (I-30)"
+else
+  bad "clamps a table too wide to fit (I-30)"
+fi
+
+# A document is content, never instructions: an embedded escape sequence must
+# not reach the terminal that is printing it. See I-29.
+ESC_DOC="$STATE/escapes.md"
+printf '# T\n\nclear: \033[2J\033[H and a bell \007 here\n' > "$ESC_DOC"
+if $RUN --plain "$ESC_DOC" </dev/null | grep -qa $'\033'; then
+  bad "neutralises escape sequences embedded in a document (I-29)"
+else
+  ok "neutralises escape sequences embedded in a document (I-29)"
+fi
+
+# Downstream leaving early is ordinary Unix behaviour, not a failure. `head`
+# closes the pipe as soon as it has its line, and the write still in flight
+# then fails with EPIPE — which Node throws by default. See I-32.
+if npx tsx src/cli.tsx test/fixtures/large.md 2>"$STATE/epipe.err" | head -1 >/dev/null; then
+  if [ -s "$STATE/epipe.err" ]; then
+    bad "composes with head without an EPIPE trace (I-32)"
+  else
+    ok "composes with head without an EPIPE trace (I-32)"
+  fi
+else
+  bad "composes with head without an EPIPE trace (I-32)"
+fi
+# `grep -q` closes even more abruptly.
+if $RUN --plain test/fixtures/large.md 2>/dev/null | grep -qa 'large document'; then
+  ok "composes with grep -q (I-32)"
+else
+  bad "composes with grep -q (I-32)"
+fi
+
+# The EPIPE handler exits straight from a stream's error event, which never
+# unwinds through `main()`'s `finally { leaveScreen() }`. Restoration must not
+# depend on that finally — `screen.ts` also restores from `process.on('exit')`,
+# and this is the check that says so. See I-7, I-32.
+PROBE="$STATE/exit-probe.mts"
+printf "import { enterScreen } from '%s/src/ui/screen.js';\nenterScreen(process.stdout, true);\nprocess.exit(0);\n" "$PWD" > "$PROBE"
+PROBE_OUT=$(npx tsx "$PROBE" 2>/dev/null)
+if printf '%s' "$PROBE_OUT" | grep -qa "$(printf '\033')\[?1049l" &&
+   printf '%s' "$PROBE_OUT" | grep -qa "$(printf '\033')\[?1000l"; then
+  ok "restores the terminal on a bare process.exit (I-7)"
+else
+  bad "restores the terminal on a bare process.exit (I-7)"
+fi
+
 echo
 [ "$fail" -eq 0 ] && echo "smoke tests passed" || echo "smoke tests FAILED"
 exit "$fail"

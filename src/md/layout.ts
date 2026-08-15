@@ -6,6 +6,7 @@ import { inlineSpans, type InlineContext } from './inline.js';
 import { layoutCode } from './code.js';
 import { layoutTable } from './tables.js';
 import { parseMarkdown, type FrontMatter } from './parse.js';
+import { sanitizeSource } from '../core/sanitize.js';
 
 /** Breathing room between the terminal edge and the text column. */
 const MARGIN = 2;
@@ -291,7 +292,9 @@ function renderRefs(refs: string[], ctx: Ctx): void {
  * it while scrolling. See I-3 and I-4.
  */
 export function layoutDoc(src: string, opts: LayoutOptions): Doc {
-  const { frontMatter, tokens } = parseMarkdown(src);
+  /* I-29: control bytes are neutralised before anything parses or measures
+     them, so no path downstream can carry one into a rendered row. */
+  const { frontMatter, tokens } = parseMarkdown(sanitizeSource(src));
   const { left, inner } = geometry(opts);
   const out: Out = { lines: [], toc: [], code: [], block: 0 };
   const ictx: InlineContext = { theme: opts.theme, links: opts.links, refs: [] };

@@ -131,11 +131,24 @@ folio README.md | cat      # plain text, no escape codes
 FORCE_COLOR=3 folio R.md | less -R
 cat NOTES.md | folio       # still interactive, via /dev/tty
 folio --watch spec.md      # re-renders as you edit
+folio spec.md | head -20   # closing the pipe early is not an error
 ```
 
 Exit status is 0 for success, 1 for a document that could not be read, 2 for bad
 usage. Piping a document in still opens a real pager: the content comes from
 stdin and the keyboard is borrowed from the controlling terminal.
+
+A reader that stops reading is not a failure: `head`, `grep -q` and quitting out
+of `less` all close the pipe mid-write, and folio treats that as the job being
+done rather than printing a broken-pipe trace. Printed output is also clamped to
+the width of your terminal, so a table wider than the screen is cut with a mark
+instead of wrapping into noise.
+
+A document is content, never instructions. Control bytes in a file — an escape
+sequence that would clear your screen, a forged `OSC 8` link target, a `\r` that
+overwrites the line above — are shown in caret notation (`^[`, `^G`) the way
+`less` shows them, rather than handed to your terminal. Pointing folio at a
+README you have not read is safe.
 
 ## Why not glow
 

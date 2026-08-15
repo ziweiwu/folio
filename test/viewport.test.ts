@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCoalescer } from '../src/core/coalesce.js';
 import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
-import { findMatches, highlightRow, isCaseSensitive, nextMatch } from '../src/core/search.js';
+import { findMatches, highlightRow, isCaseSensitive, nextMatch, stepMatch } from '../src/core/search.js';
 import { parseArgs } from '../src/core/options.js';
-import { parseBurst } from '../src/core/keys.js';
+import { parseBurst, splitBurst } from '../src/core/keys.js';
 import { anchorOffset, clampOffset, maxOffset } from '../src/core/position.js';
 import { composeFrame, scrollPercent, scrollbar, sectionAt, statusBar } from '../src/ui/chrome.js';
 import { centre, overlayRows } from '../src/ui/overlay.js';
@@ -158,6 +158,33 @@ describe('status bar', () => {
     expect(narrow).not.toContain('A very long section');
   });
 
+  it('I-26 keeps the sideways offset when the hints will not fit', () => {
+    /* The offset is what tells a reader whether the `›` at the edge of a row
+       is something `l` can reach. The hints are a legend they can get from `?`
+       at any time, so the legend is what gives way. */
+    const HINTS = '/ search   t toc   ? keys   q quit';
+    const shifted = { ...info, name: 'wideonly.md', state: '↔ 72', hints: HINTS };
+    for (const width of [30, 40, 60, 80, 120]) {
+      const bar = stripAnsi(statusBar(shifted, width, theme, 0));
+      expect(bar, `${width} cols`).toContain('↔ 72');
+      expect(ansiWidth(statusBar(shifted, width, theme, 3)), `${width} cols`).toBe(width);
+    }
+    // The legend, not the state, is what disappears when both cannot fit.
+    expect(stripAnsi(statusBar(shifted, 40, theme, 0))).not.toContain('q quit');
+    expect(stripAnsi(statusBar(shifted, 120, theme, 0))).toContain('q quit');
+  });
+
+  it('I-26 keeps the mark when even the count will not fit', () => {
+    // Narrower still, *that* the viewport is offset outlives by how much.
+    const bar = stripAnsi(statusBar({ ...info, name: 'wideonly.md', state: '↔ 72', hints: 'q quit' }, 25, theme, 0));
+    expect(bar).toContain('↔');
+  });
+
+  it('I-26 says nothing about a viewport that has not moved sideways', () => {
+    const bar = stripAnsi(statusBar({ ...info, state: null }, 80, theme, 0));
+    expect(bar).not.toContain('↔');
+  });
+
   it('shows a transient note across the whole bar, never truncated into the filename', () => {
     const note = 'sent 6 lines to the clipboard';
     const bar = stripAnsi(statusBar({ ...info, message: note }, 80, theme, 0));
@@ -207,6 +234,45 @@ describe('search', () => {
     expect(nextMatch([], 0, false)).toBe(-1);
   });
 
+  it('I-28 reaches every match exactly once per cycle', () => {
+    /* A row offset cannot address a match: a line may hold several, and
+       revealing one scrolls the offset above it. Stepping by offset therefore
+       oscillated between two hits while the bar advertised four. */
+    const many = layoutDoc('# D\n\nalpha alpha alpha on one line\n\nbeta\n\nalpha again\n', opts());
+    const matches = findMatches(many.lines, 'alpha');
+    expect(matches.length).toBe(4);
+
+    const visited: number[] = [];
+    let at = nextMatch(matches, 0, false);
+    for (let i = 0; i < matches.length; i++) {
+      visited.push(at);
+      at = stepMatch(matches, at, false);
+    }
+    // Each match once, and back where it started.
+    expect(new Set(visited).size).toBe(matches.length);
+    expect(at).toBe(visited[0]);
+  });
+
+  it('I-28 steps backwards through every match too', () => {
+    const many = layoutDoc('# D\n\nalpha alpha alpha\n\nalpha\n', opts());
+    const matches = findMatches(many.lines, 'alpha');
+    const visited: number[] = [];
+    let at = 0;
+    for (let i = 0; i < matches.length; i++) {
+      visited.push(at);
+      at = stepMatch(matches, at, true);
+    }
+    expect(new Set(visited).size).toBe(matches.length);
+    expect(at).toBe(0);
+  });
+
+  it('I-28 survives a stale index after the document changes', () => {
+    const matches = findMatches(layoutDoc('a\n', opts()).lines, 'a');
+    expect(stepMatch(matches, 99, false)).toBe(0);
+    expect(stepMatch(matches, -1, true)).toBe(matches.length - 1);
+    expect(stepMatch([], 0, false)).toBe(-1);
+  });
+
   it('re-styles a match inside an already-styled row without changing its width', () => {
     const source = layoutDoc('This has **bold pure** text in it.\n', opts({ level: 3 }));
     const row = source.lines[0]!;
@@ -238,7 +304,7 @@ describe('overlays', () => {
   });
 
   it('shows the pane contents over the document', () => {
-    const pane = helpPane(100, theme, 3);
+    const pane = helpPane(100, 24, theme, 3);
     const out = overlayRows(base, pane.rows, 2, 10, 100, 3);
     expect(stripAnsi(out.join('\n'))).toContain('half a screen');
   });
@@ -251,6 +317,68 @@ describe('overlays', () => {
       const frame = composeFrame(doc, { offset: 0, height: h, total: doc.lines.length }, w, theme, 3);
       const out = overlayRows(frame, pane.rows, at.top, at.left, w, 3);
       expect(new Set(out.map(ansiWidth))).toEqual(new Set([w]));
+    }
+  });
+
+  it('I-25 draws either pane at any terminal size without throwing', () => {
+    // A pane is sized from the terminal, and a terminal can be one column
+    // wide. `String.repeat` throws on a negative count, which is how a narrow
+    // window used to take the whole app down on `?`.
+    for (const w of [1, 2, 3, 5, 8, 10, 15, 20, 25, 40, 60, 80, 100, 160, 200]) {
+      for (const h of [1, 2, 3, 5, 10, 24, 40]) {
+        for (const pane of [tocPane(doc, 0, w, h, theme, 3), helpPane(w, h, theme, 3)]) {
+          // Every row of a pane is the same width, or the box shears.
+          expect(new Set(pane.rows.map(ansiWidth)), `pane rows at ${w}x${h}`).toEqual(
+            new Set([pane.width]),
+          );
+          const at = centre(pane.width, pane.height, w, h);
+          const frame = composeFrame(doc, { offset: 0, height: h, total: doc.lines.length }, w, theme, 3);
+          const out = overlayRows(frame, pane.rows, at.top, at.left, w, 3);
+          // I-18 holds with an overlay up: the frame is still exactly the width.
+          expect(new Set(out.map(ansiWidth)), `frame at ${w}x${h}`).toEqual(new Set([w]));
+          expect(out).toHaveLength(h);
+        }
+      }
+    }
+  });
+
+  it('I-25 keeps help entries inside the box rather than through it', () => {
+    // `padAnsi` pads a short row but leaves a long one alone, so an entry wider
+    // than the box used to print straight over the document and the scrollbar.
+    for (const w of [25, 30, 40, 41, 44, 60, 100]) {
+      const pane = helpPane(w, 24, theme, 3);
+      for (const row of pane.rows) {
+        const plain = stripAnsi(row);
+        // Trailing margin aside, a body row must close with its own border.
+        if (plain.includes('│')) expect(plain.trimEnd().endsWith('│'), `${w}: ${plain}`).toBe(true);
+      }
+    }
+  });
+
+  it('I-25 never ends the key list without saying it was cut', () => {
+    // A reader who cannot see `q` needs to know the list continues.
+    const short = helpPane(80, 8, theme, 0);
+    expect(stripAnsi(short.rows.join('\n'))).toContain('folio --help');
+    expect(short.height).toBeLessThanOrEqual(8);
+  });
+
+  it('I-25 always shows the way out, however short the terminal', () => {
+    /* Everything else in the list is a convenience. `q` is the way out of a
+       full-screen app, so it is the one entry that survives any clipping. */
+    for (const h of [3, 4, 5, 6, 8, 12, 16, 20, 22, 23, 24, 40]) {
+      const pane = helpPane(80, h, theme, 0);
+      expect(stripAnsi(pane.rows.join('\n')), `${h} rows`).toContain('quit');
+      // A box costs a head and a foot; below that it cannot be drawn at all.
+      expect(pane.height, `${h} rows`).toBeLessThanOrEqual(Math.max(3, h));
+    }
+  });
+
+  it('I-25 lists every key the viewer answers to', () => {
+    // The overlay is the only place most readers will look; a key that is not
+    // here may as well not exist.
+    const text = stripAnsi(helpPane(100, 40, theme, 0).rows.join('\n'));
+    for (const key of ['tab', 'enter', 'backspace', 'y', '0', 'h  l']) {
+      expect(text, `missing ${key}`).toContain(key);
     }
   });
 
@@ -379,6 +507,71 @@ describe('I-15 key repeat arrives in bursts', () => {
 
   it('I-15 handles an empty chunk', () => {
     expect(parseBurst('', {})).toEqual({ key: '', repeat: 1 });
+  });
+
+  it('I-15 applies a burst of different motion keys instead of dropping it', () => {
+    /* `jd` used to match no case at all and be discarded, losing both
+       keystrokes — the opposite of keeping up with the keyboard. */
+    expect(splitBurst('jd', {})).toEqual([
+      { key: 'j', repeat: 1 },
+      { key: 'd', repeat: 1 },
+    ]);
+    expect(splitBurst('jjkj', {})).toEqual([
+      { key: 'j', repeat: 2 },
+      { key: 'k', repeat: 1 },
+      { key: 'j', repeat: 1 },
+    ]);
+  });
+
+  it('I-15 splits a burst that changes mode part way through', () => {
+    /* This used to be refused, because the handler branched on React state and
+       `t` would have opened the contents against a mode the `q` after it could
+       not see. The handler branches on refs now, so a chunk means the
+       keystrokes it spells — `tq` opens the contents and quits, exactly as
+       pressing the two keys does. See I-34. */
+    expect(splitBurst('tq', {})).toEqual([
+      { key: 't', repeat: 1 },
+      { key: 'q', repeat: 1 },
+    ]);
+    expect(splitBurst('j/', {})).toEqual([
+      { key: 'j', repeat: 1 },
+      { key: '/', repeat: 1 },
+    ]);
+  });
+
+  it('I-15 does not take a pasted sentence for typing', () => {
+    /* Bracketed paste routes a real paste off this channel entirely, but a
+       terminal too old for it delivers one as plain text — and replaying a
+       sentence as commands means the `q` in "quick" quits the viewer. A run of
+       one key is still key repeat, however long. See I-35. */
+    for (const pasted of [
+      'the quick brown fox jumps over the lazy dog',
+      'npm install --save-dev typescript',
+      'git commit -m fix',
+    ]) {
+      expect(splitBurst(pasted, {}), pasted).toEqual([{ key: pasted, repeat: 1 }]);
+    }
+    // Held keys are unaffected, whatever the length.
+    expect(splitBurst('j'.repeat(40), {})).toEqual([{ key: 'j', repeat: 40 }]);
+    // And a short burst is still the keystrokes it spells.
+    expect(splitBurst('tjjjj\r', {})).toHaveLength(3);
+  });
+
+  it('I-15 never splits an escape sequence into its bytes', () => {
+    // An arrow key is one keypress spelled in several bytes; splitting it
+    // would dispatch `[` and `A` as if the reader had typed them.
+    const ESC = String.fromCharCode(27);
+    expect(splitBurst(`${ESC}[A`, {})).toEqual([{ key: `${ESC}[A`, repeat: 1 }]);
+    expect(splitBurst(`j${ESC}[B`, {})).toEqual([{ key: `j${ESC}[B`, repeat: 1 }]);
+  });
+
+  it('I-15 agrees with parseBurst on everything it does not split', () => {
+    for (const chunk of ['j', 'jjjj', '', 'tq', 'G', ' ']) {
+      const segments = splitBurst(chunk, {});
+      if (segments.length === 1) expect(segments[0]).toEqual(parseBurst(chunk, {}));
+    }
+    expect(splitBurst('jd', { ctrl: true })).toEqual([{ key: 'jd', repeat: 1 }]);
+    expect(splitBurst('jd', { meta: true })).toEqual([{ key: 'jd', repeat: 1 }]);
   });
 })
 

@@ -28,7 +28,15 @@ export function findMatches(lines: readonly Line[], query: string): Match[] {
   return out;
 }
 
-/** The first match at or after `line`, wrapping around the end. */
+/**
+ * The first match at or after `line`, wrapping around the end.
+ *
+ * Used to *seed* a search from where the reader is looking. Stepping from one
+ * hit to the next is `stepMatch`, not this: a row offset cannot address a
+ * match, because a line may hold several and jumping to one scrolls the offset
+ * above it — which made `n` oscillate between two hits and left every other
+ * match on a shared line unreachable, while the count promised otherwise.
+ */
 export function nextMatch(matches: readonly Match[], line: number, backwards: boolean): number {
   if (matches.length === 0) return -1;
   if (backwards) {
@@ -37,6 +45,19 @@ export function nextMatch(matches: readonly Match[], line: number, backwards: bo
   }
   for (let i = 0; i < matches.length; i++) if (matches[i]!.line > line) return i;
   return 0;
+}
+
+/**
+ * The match after (or before) the one currently selected, wrapping.
+ *
+ * Every match is reachable exactly once per cycle, including several on the
+ * same row, so `n` pressed `matches.length` times returns to where it started.
+ */
+export function stepMatch(matches: readonly Match[], current: number, backwards: boolean): number {
+  if (matches.length === 0) return -1;
+  if (current < 0 || current >= matches.length) return backwards ? matches.length - 1 : 0;
+  const step = backwards ? -1 : 1;
+  return ((current + step) % matches.length + matches.length) % matches.length;
 }
 
 /**

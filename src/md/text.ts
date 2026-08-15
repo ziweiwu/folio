@@ -1,6 +1,7 @@
 import { chopSpans, plainSpans, renderSpans } from '../core/wrap.js';
 import type { Doc, LayoutOptions, Line } from '../core/types.js';
 import { geometry } from './layout.js';
+import { sanitizeSource } from '../core/sanitize.js';
 
 /**
  * Render a file as plain text, with no markup interpretation at all.
@@ -20,8 +21,10 @@ export function layoutText(src: string, opts: LayoutOptions): Doc {
   const margin = ' '.repeat(left);
   const lines: Line[] = [];
 
-  src.replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n').forEach((raw, i) => {
-    const spans = [{ text: raw.replace(/\t/g, '    '), style: theme.text }];
+  // I-29: same rule as the markdown path — the file does not drive the terminal.
+  sanitizeSource(src).replace(/\n+$/, '').split('\n').forEach((raw, i) => {
+    // Tabs were already expanded against real tab stops by `sanitizeSource`.
+    const spans = [{ text: raw, style: theme.text }];
     for (const row of chopSpans(spans, inner)) {
       const withMargin = [{ text: margin, style: {} }, ...row];
       const plain = plainSpans(withMargin).replace(/\s+$/, '');

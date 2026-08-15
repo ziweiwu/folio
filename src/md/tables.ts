@@ -26,7 +26,11 @@ function solveWidths(natural: number[], budget: number): number[] {
   while (total > budget) {
     let widest = 0;
     for (let i = 1; i < w.length; i++) if (w[i]! > w[widest]!) widest = i;
-    if (w[widest]! <= MIN) break; // everything is at the floor; caller truncates
+    /* Every column is at the floor and it still does not fit: a table with
+       enough columns cannot be made narrow enough by shrinking alone, because
+       the frame alone costs three cells per column. The row is returned
+       oversized and the viewport chops it — see `wide` below, and I-26. */
+    if (w[widest]! <= MIN) break;
     w[widest]!--;
     total--;
   }
@@ -72,7 +76,12 @@ export function layoutTable(
     opts.overflow === 'scroll'
       ? natural
       : solveWidths(natural, Math.max(cols * 3, width - chrome));
-  const wide = widths.reduce((a, b) => a + b, 0) + chrome > width;
+  /* `wide` means "the viewport may scroll sideways over this". Under `wrap`
+     the reader has asked for the opposite — chop it to fit — so an oversized
+     row is left un-flagged and the viewport clips it with a mark instead of
+     offering a sideways scroll the flag promised and `--wrap` denied. */
+  const overflows = widths.reduce((a, b) => a + b, 0) + chrome > width;
+  const wide = opts.overflow === 'scroll' && overflows;
 
   const rule = (l: string, m: string, r: string): Span[] => [
     { text: l + widths.map((w) => B.h.repeat(w + 2)).join(m) + r, style: theme.tableBorder },

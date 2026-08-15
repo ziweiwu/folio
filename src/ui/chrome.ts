@@ -44,6 +44,15 @@ export type StatusInfo = {
   message?: string | null;
   name: string;
   section: string | null;
+  /**
+   * Live state that outranks the hints — currently the sideways offset.
+   *
+   * The hints are a legend the reader can get from `?` at any time. This says
+   * what the viewport is doing *now*, and it is what tells a reader whether
+   * the `›` at the edge of a row is something `l` can reach. Dropping it to
+   * make room for the legend gets the priority exactly backwards.
+   */
+  state?: string | null;
   offset: number;
   height: number;
   total: number;
@@ -80,8 +89,24 @@ export function statusBar(info: StatusInfo, width: number, theme: Theme, level: 
     if (room > 12) left += sep + paint(truncate(info.section, room), statusMuted, level);
   }
 
+  if (info.state) {
+    /* Fitted against the bar itself, not against what is left after the hints,
+       so the legend is what gives way when the bar is narrow. Narrower still,
+       the count goes but the mark stays: *that* the viewport is offset is what
+       tells a reader the `›` on a row is something `l` can reach, and it is
+       worth more than the number of cells it has moved. */
+    const spare = width - ansiWidth(left) - 1;
+    const mark = [...info.state][0] ?? '';
+    if (spare >= ansiWidth(sep) + displayWidth(info.state)) {
+      left += sep + paint(info.state, statusAccent, level);
+    } else if (mark !== '' && spare >= ansiWidth(sep) + displayWidth(mark)) {
+      left += sep + paint(mark, statusAccent, level);
+    }
+  }
+
+  // Two cells of daylight, or the legend reads as part of whatever precedes it.
   const room = width - ansiWidth(left) - 1;
-  const hints = room >= ansiWidth(info.hints) ? paint(info.hints, statusMuted, level) : '';
+  const hints = room >= ansiWidth(info.hints) + 2 ? paint(info.hints, statusMuted, level) : '';
   const bar = padAnsi(left, width - ansiWidth(hints) - 1, status, level) + hints + paint(' ', status, level);
   // The bar is the one row that must be exactly the terminal width — a short
   // one leaves the previous frame's pixels showing through.
@@ -129,15 +154,33 @@ export function composeFrame(
        wrapped to fit, so shifting it would push it off screen for nothing. */
     const full = ansiWidth(text);
     const shifted = line?.wide === true && h > 0;
+    /* A row the viewport cannot show in full. Both cases are marked with `›`,
+       which says only what is true of both: the row continues past this edge.
+       Whether `l` can reach the rest is a separate question the status bar
+       answers. An ellipsis was tried and is wrong — with colour stripped it is
+       byte-identical to one the author typed, so the reader cannot tell the
+       document from the viewer, and a mark that only exists in colour is no
+       mark at all. Silently cutting a word is the one thing not allowed. */
+    let cut = false;
     if (shifted) text = sliceAnsi(text, h, h + body);
-    else if (full > body) text = sliceAnsi(text, 0, body);
+    else if (full > body) {
+      text = sliceAnsi(text, 0, body);
+      cut = line?.wide !== true;
+    }
 
     let row = padAnsi(text, body, {}, level);
-    if (line?.wide === true) {
-      // Honest edge markers: a row that continues past either edge says so,
-      // otherwise there is no way to tell that `l` would reveal anything.
-      if (h > 0) row = paint('‹', theme.faint, level) + sliceAnsi(row, 1, body);
-      if (full > h + body) row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
+    /* Markers cost a cell, so they are only drawn where one can be spared.
+       Below that the row is already at the terminal's floor and adding a glyph
+       would push the frame past its own width. */
+    if (body >= 2) {
+      if (line?.wide === true) {
+        // Honest edge markers: a row that continues past either edge says so,
+        // otherwise there is no way to tell that `l` would reveal anything.
+        if (h > 0) row = paint('‹', theme.faint, level) + sliceAnsi(row, 1, body);
+        if (full > h + body) row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
+      } else if (cut) {
+        row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
+      }
     }
     rows.push(row + (bar[i] ?? ' '));
   }
