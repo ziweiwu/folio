@@ -132,7 +132,7 @@ describe('scrollbar', () => {
 });
 
 describe('status bar', () => {
-  const info = { name: 'README.md', section: '## Install', offset: 40, height: 20, total: 200, hints: 'q quit' };
+  const info = { name: 'README.md', section: '## Install', offset: 40, height: 20, total: 200, hints: ['q quit'] };
 
   it('is exactly the terminal width at every size', () => {
     for (const width of [24, 40, 80, 100, 200]) {
@@ -141,18 +141,46 @@ describe('status bar', () => {
   });
 
   it('drops the hints before it drops the filename', () => {
-    const long = { ...info, hints: '/ search   t toc   ? keys   q quit' };
+    const long = { ...info, hints: ['/ search', 't toc', '? keys', 'q quit'] };
     const wide = stripAnsi(statusBar(long, 100, theme, 0));
     expect(wide).toContain('README.md');
     expect(wide).toContain('q quit');
 
     const narrow = stripAnsi(statusBar(long, 30, theme, 0));
     expect(narrow).toContain('README.md');
-    expect(narrow).not.toContain('q quit');
+    // The legend gives way an item at a time, from the front, so what is left
+    // at 30 columns is the escape hatch and nothing else.
+    expect(narrow).not.toContain('/ search');
+    expect(narrow).toContain('q quit');
+  });
+
+  it('drops the legend from the front, so q and ? outlive the rest', () => {
+    /* It used to be shown whole or not at all, which left every terminal under
+       65 columns — an ordinary tmux split — with no legend and no `?` with
+       which to find one. The panes had degraded gracefully all along. */
+    const long = { ...info, hints: ['/ search', 't toc', '? keys', 'q quit'] };
+    const at = (w: number) => stripAnsi(statusBar(long, w, theme, 0));
+
+    expect(at(30)).toContain('q quit');
+    expect(at(40)).toContain('? keys   q quit');
+    expect(at(60)).toContain('/ search   t toc   ? keys   q quit');
+
+    /* Whatever is shown is always a whole *suffix* of the legend — never a
+       partial item, and never a gap in the middle. Half of `? keys` is not a
+       hint, it is noise. */
+    const items = ['/ search', 't toc', '? keys', 'q quit'];
+    const suffixes = items.map((_, i) => items.slice(i).join('   '));
+    for (let w = 20; w <= 100; w++) {
+      const shown = stripAnsi(statusBar(long, w, theme, 0)).trimEnd();
+      if (items.some((item) => shown.includes(item))) {
+        expect(suffixes.some((suffix) => shown.endsWith(suffix)), `${w} cols: ${shown}`).toBe(true);
+      }
+      expect(ansiWidth(statusBar(long, w, theme, 3)), `${w} cols`).toBe(w);
+    }
   });
 
   it('drops the section before it drops the position', () => {
-    const long = { ...info, section: '## A very long section title indeed', hints: 'q quit' };
+    const long = { ...info, section: '## A very long section title indeed', hints: ['q quit'] };
     const narrow = stripAnsi(statusBar(long, 34, theme, 0));
     expect(narrow).toContain('22%');
     expect(narrow).not.toContain('A very long section');
@@ -162,21 +190,25 @@ describe('status bar', () => {
     /* The offset is what tells a reader whether the `›` at the edge of a row
        is something `l` can reach. The hints are a legend they can get from `?`
        at any time, so the legend is what gives way. */
-    const HINTS = '/ search   t toc   ? keys   q quit';
+    const HINTS = ['/ search', 't toc', '? keys', 'q quit'];
     const shifted = { ...info, name: 'wideonly.md', state: '↔ 72', hints: HINTS };
     for (const width of [30, 40, 60, 80, 120]) {
       const bar = stripAnsi(statusBar(shifted, width, theme, 0));
       expect(bar, `${width} cols`).toContain('↔ 72');
       expect(ansiWidth(statusBar(shifted, width, theme, 3)), `${width} cols`).toBe(width);
     }
-    // The legend, not the state, is what disappears when both cannot fit.
-    expect(stripAnsi(statusBar(shifted, 40, theme, 0))).not.toContain('q quit');
-    expect(stripAnsi(statusBar(shifted, 120, theme, 0))).toContain('q quit');
+    /* The legend, not the state, is what gives way when both cannot fit. At 40
+       columns the state is intact and the legend has been cut back to its last
+       item; only at full width is the whole legend there. */
+    const narrow = stripAnsi(statusBar(shifted, 40, theme, 0));
+    expect(narrow).toContain('↔ 72');
+    expect(narrow).not.toContain('/ search');
+    expect(stripAnsi(statusBar(shifted, 120, theme, 0))).toContain('/ search   t toc   ? keys   q quit');
   });
 
   it('I-26 keeps the mark when even the count will not fit', () => {
     // Narrower still, *that* the viewport is offset outlives by how much.
-    const bar = stripAnsi(statusBar({ ...info, name: 'wideonly.md', state: '↔ 72', hints: 'q quit' }, 25, theme, 0));
+    const bar = stripAnsi(statusBar({ ...info, name: 'wideonly.md', state: '↔ 72', hints: ['q quit'] }, 25, theme, 0));
     expect(bar).toContain('↔');
   });
 
@@ -283,6 +315,29 @@ describe('search', () => {
     expect(stripAnsi(out)).toBe(row.plain);
     expect(ansiWidth(out)).toBe(ansiWidth(row.ansi));
     expect(out).toContain('48;2;255;158;100'); // the current-match background
+  });
+
+  it('I-11 marks a match without colour, so NO_COLOR still shows where it is', () => {
+    /* `paint` returns text untouched at level 0, which is right for everything
+       the layout draws — a heading keeps its rule, a task its box. A match has
+       no such second channel: it differs from its surroundings by background
+       alone, so with colour off it vanished and the match count in the status
+       bar was the only evidence it existed. Colour as the only signal is what
+       pillar 2 forbids. Reverse video is an attribute, not a colour. */
+    const source = layoutDoc('the cat sat on the mat\n', opts({ level: 0 }));
+    const row = source.lines[0]!;
+    const at = (style: typeof theme.match) =>
+      highlightRow(row.ansi, row.plain, findMatches([row], 'cat').map((m) => ({ start: m.start, end: m.end, style })), 100, 0);
+
+    const plain = at(theme.match);
+    expect(plain).not.toBe(row.ansi); // it is marked at all
+    expect(plain).toContain('\x1b[7m'); // reverse video, not a colour
+    expect(plain).not.toMatch(/\x1b\[[34]8;2;/); // and no fg/bg colour
+    expect(stripAnsi(plain)).toBe(row.plain); // the text is untouched
+    expect(ansiWidth(plain)).toBe(ansiWidth(row.ansi)); // and so is the width
+
+    // The current match stays distinguishable from the rest without colour.
+    expect(at(theme.matchCurrent)).not.toBe(plain);
   });
 
   it('leaves a row alone when nothing matches it', () => {
@@ -521,6 +576,24 @@ describe('I-15 key repeat arrives in bursts', () => {
       { key: 'k', repeat: 1 },
       { key: 'j', repeat: 1 },
     ]);
+  });
+
+  it('I-15 counts variety in runs, not in characters', () => {
+    /* The paste guard is about *variety*: I-35 says "more than eight different
+       keys". Testing the chunk's length instead made length stand in for it, so
+       two keys held in turn tripped a paste guard and every keystroke in the
+       chunk was dropped — the opposite of the exemption directly above it,
+       which says a run of one key stays typing however long it is. */
+    expect(splitBurst('jjjjjkkkkk', {})).toEqual([
+      { key: 'j', repeat: 5 },
+      { key: 'k', repeat: 5 },
+    ]);
+    expect(splitBurst(`${'j'.repeat(22)}k`, {})).toEqual([
+      { key: 'j', repeat: 22 },
+      { key: 'k', repeat: 1 },
+    ]);
+    // Nine distinct runs is still refused, which is what the guard is for.
+    expect(splitBurst('abcdefghi', {})).toEqual([{ key: 'abcdefghi', repeat: 1 }]);
   });
 
   it('I-15 splits a burst that changes mode part way through', () => {

@@ -80,7 +80,12 @@ export function splitBurst(input: string, mods: { ctrl?: boolean; meta?: boolean
     if (last && last.key === c) last.repeat++;
     else out.push({ key: c, repeat: 1 });
   }
-  // One key repeating is always typing. Many different ones, at length, is not.
-  if (out.length > 1 && input.length > MAX_TYPED) return [parseBurst(input, mods)];
+  /* One key repeating is always typing. Many different ones, at length, is not.
+     Counted in *runs*, which is what I-35 says ("more than eight different
+     keys") and what the exemption above it means. Counting `input.length`
+     instead made length stand in for variety, so two keys held in turn —
+     `jjjjjkkkkk` — tripped a paste guard and all ten keystrokes were dropped on
+     the floor. */
+  if (out.length > MAX_TYPED) return [parseBurst(input, mods)];
   return out;
 }

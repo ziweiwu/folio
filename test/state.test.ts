@@ -17,7 +17,7 @@ describe('remembering where you were', () => {
     expect(parsePositions(JSON.stringify(store))).toEqual(store);
   });
 
-  it('treats a corrupt or foreign store as empty rather than failing', () => {
+  it('I-22 treats a corrupt or foreign store as empty rather than failing', () => {
     expect(parsePositions('not json')).toEqual(EMPTY);
     expect(parsePositions('null')).toEqual(EMPTY);
     expect(parsePositions('{"version":99,"entries":{}}')).toEqual(EMPTY);

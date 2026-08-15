@@ -1,4 +1,4 @@
-import { displayWidth } from './width.js';
+import { clusters, displayWidth } from './width.js';
 import { hyperlink, paint, type ColorLevel } from './ansi.js';
 import type { Span } from './types.js';
 
@@ -20,8 +20,7 @@ function hardSplit(atom: Span, width: number): Span[] {
   const parts: Span[] = [];
   let cur = '';
   let w = 0;
-  for (const ch of atom.text) {
-    const cw = displayWidth(ch);
+  for (const [ch, cw] of clusters(atom.text)) {
     if (w + cw > width && cur !== '') {
       parts.push({ ...atom, text: cur });
       cur = '';
@@ -166,8 +165,7 @@ export function chopSpans(spans: Span[], width: number): Span[][] {
   let w = 0;
   for (const span of spans) {
     let cur = '';
-    for (const ch of span.text) {
-      const cw = displayWidth(ch);
+    for (const [ch, cw] of clusters(span.text)) {
       if (w + cw > width) {
         if (cur !== '') line.push({ ...span, text: cur });
         lines.push(line);
@@ -192,8 +190,7 @@ export function truncateSpans(spans: Span[], width: number): Span[] {
   let w = 0;
   for (const span of spans) {
     let cur = '';
-    for (const ch of span.text) {
-      const cw = displayWidth(ch);
+    for (const [ch, cw] of clusters(span.text)) {
       if (w + cw > width - 1) {
         if (cur !== '') out.push({ ...span, text: cur });
         out.push({ ...span, text: '…' });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
 import { composeFrame, maxHOffset } from '../src/ui/chrome.js';
+import { highlightRow } from '../src/core/search.js';
 import { layoutDoc } from '../src/md/layout.js';
 import { pickTheme } from '../src/ui/theme.js';
 import { fixture, FIXTURES, opts } from './helpers.js';
@@ -37,6 +38,48 @@ describe('I-18 a composed frame never exceeds the terminal, in either overflow m
       });
     }
   }
+});
+
+describe('I-18 a decorated row is still clipped by the viewport, not by the decorator', () => {
+  /* `composeFrame` had never been called with a `decorate` callback anywhere in
+     the suite, so the entire interaction between search/link highlighting and
+     the viewport was unexercised — which is where this lived. */
+  const doc = layoutDoc(WIDE, opts({ width: 60, overflow: 'scroll', level: 0 }));
+  const row = doc.lines.findIndex((l) => l.plain.includes('docker run'));
+  const state = { offset: 0, height: doc.lines.length, total: doc.lines.length, hOffset: 8 };
+
+  it('I-18 never shortens the row it decorates, whatever width it is handed', () => {
+    /* The guarantee has to hold for *any* width a caller passes, because the
+       caller that had it wrong passed the viewport's. Clipping to the screen is
+       `composeFrame`'s job and happens after this. */
+    const wide = doc.lines[row]!.ansi;
+    for (const w of [10, 59, ansiWidth(wide), 500]) {
+      const lit = highlightRow(wide, doc.lines[row]!.plain, [{ start: 0, end: 5, style: { bold: true } }], w, 0);
+      expect(ansiWidth(lit), `width ${w}`).toBe(ansiWidth(wide));
+      expect(stripAnsi(lit), `width ${w}`).toBe(stripAnsi(wide));
+    }
+  });
+
+  it('I-18 keeps a panned wide row intact when a match is highlighted on it', () => {
+    const plain = composeFrame(doc, state, 60, theme, 0);
+    const lit = composeFrame(doc, state, 60, theme, 0, (text, line) =>
+      line === row ? highlightRow(text, doc.lines[line]!.plain, [{ start: 0, end: 5, style: { bold: true } }], 59, 0) : text,
+    );
+    /* Highlighting a match near the start of a 100+ cell row used to cut it to
+       the viewport's width *before* the pan was applied, so the frame went
+       blank exactly where the reader had scrolled to. */
+    expect(stripAnsi(lit[row]!)).toBe(stripAnsi(plain[row]!));
+    expect(stripAnsi(lit[row]!).trim()).not.toBe('');
+  });
+
+  it('I-10 a decorated frame is still exactly the terminal width', () => {
+    for (const h of [0, 8, 40]) {
+      const frame = composeFrame(doc, { ...state, hOffset: h }, 60, theme, 3, (text, line) =>
+        line === row ? highlightRow(text, doc.lines[line]!.plain, [{ start: 0, end: 5, style: { bold: true } }], ansiWidth(text), 3) : text,
+      );
+      for (const [i, r] of frame.entries()) expect(ansiWidth(r), `h${h} row ${i}`).toBe(60);
+    }
+  });
 });
 
 describe('wide content scrolls sideways instead of being chopped', () => {

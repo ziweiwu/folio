@@ -1,6 +1,6 @@
 import { Box, Text, useApp, useInput, usePaste, useStdin, useStdout } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ColorLevel } from './core/ansi.js';
+import { ansiWidth, type ColorLevel } from './core/ansi.js';
 import type { HighlightFn, Theme } from './core/types.js';
 import type { Options } from './core/options.js';
 import { splitBurst } from './core/keys.js';
@@ -17,7 +17,11 @@ import { composeFrame, maxHOffset, sectionAt, statusBar } from './ui/chrome.js';
 import { centre, overlayRows } from './ui/overlay.js';
 import { helpPane, searchBar, tocPane } from './ui/panes.js';
 
-const HINTS = '/ search   t toc   ? keys   q quit';
+/* In display order, least important first: the bar drops them from the front
+   when it is narrow, so `q quit` is the last thing to go and `? keys` the
+   second last — between them a reader can always leave, or find everything
+   else that is missing. */
+const HINTS = ['/ search', 't toc', '? keys', 'q quit'];
 
 export type Source = { text: string; highlight?: HighlightFn };
 
@@ -53,6 +57,13 @@ export type AppProps = {
    * open file is; the app only knows it wants to go somewhere.
    */
   open?: (path: string) => Promise<{ source: Source; name: string; markdown: boolean } | null>;
+  /**
+   * Told when the reader goes back, so the host can unwind whatever `open`
+   * advanced. Without it the host's idea of "the current file" only ever moves
+   * forwards: after A → B → back, the next relative link from A resolved
+   * against B's directory, and A's reading position was saved under B's path.
+   */
+  onBack?: () => void;
   /** Block to resume at, from a previous read of this file. */
   startBlock?: number | null;
   /** Reports the block at the top of the viewport, so it can be remembered. */
@@ -109,7 +120,7 @@ function keysFor(ch: string): Keys {
   return { ...NO_KEYS, return: ch === '\r' || ch === '\n', tab: ch === '\t' };
 }
 
-export function App({ initial, name, options, theme, level, mouse, reload, watch, upgrade, markdown = true, overflow, open, startBlock = null, onPosition }: AppProps) {
+export function App({ initial, name, options, theme, level, mouse, reload, watch, upgrade, markdown = true, overflow, open, onBack, startBlock = null, onPosition }: AppProps) {
   const { exit } = useApp();
   const { stdin } = useStdin();
   const { stdout } = useStdout();
@@ -143,6 +154,12 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   const back = useRef<Array<{ source: Source; title: string; offset: number; markdown: boolean }>>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  /* Where `goBack` wants to land. Deferred for the same reason the anchor above
+     is: the document being returned to has not been laid out yet, so the scroll
+     limits still describe the one being left. Restoring row 44 of a 200-row
+     document while a 3-row one is still current clamped it to 0 and dropped the
+     reader at the top of what they had already read. */
+  const [pendingOffset, setPendingOffset] = useState<number | null>(null);
 
   const enterMode = useCallback((next: Mode) => {
     modeRef.current = next;
@@ -192,7 +209,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     height,
     startBlock === null ? 0 : anchorOffset(doc.lines, startBlock, height),
   );
-  const { offset, scrollBy, scrollTo } = scroll;
+  const { offset, offsetRef, scrollBy, scrollTo } = scroll;
 
   /* Bounded by the widest row currently on screen, not by the whole document:
      how far right you can go depends on what you are looking at. */
@@ -205,7 +222,33 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
      showing is remembered instead, and the offset is recomputed from it. */
   const anchorRef = useRef(0);
   const lastWidthRef = useRef(columns);
+  const anchorDocRef = useRef(doc);
+
+  /* Declared ahead of the recorder below, because effects run in declaration
+     order and this one has to read `anchorRef` before that one rewrites it.
+     A resize changes `columns` and `doc` in the same commit while `offset` is
+     still counting rows in the layout being replaced — so the recorder indexed
+     the new rows with an old row number, overwrote the anchor with a block the
+     reader had never been on, and this effect then faithfully re-anchored to
+     it. Going 120 columns to 50 on a 6,246-row document, 6,235 of the 6,246
+     possible positions landed somewhere else, as much as 2,742 rows adrift, and
+     the same wrong block was handed to `onPosition` and saved (I-21). */
   useEffect(() => {
+    if (lastWidthRef.current === columns) return;
+    lastWidthRef.current = columns;
+    scrollTo(anchorOffset(doc.lines, anchorRef.current, height));
+  }, [columns, doc, height, scrollTo]);
+
+  useEffect(() => {
+    if (anchorDocRef.current !== doc) {
+      /* A re-layout has landed and `offset` still describes the one before it.
+         Skip this pass rather than read a block at an index that means nothing
+         in these rows. The re-anchor above has already put the viewport back on
+         `anchorRef`, so it remains the block on screen, and the offset change
+         that follows records from rows the number actually belongs to. */
+      anchorDocRef.current = doc;
+      return;
+    }
     const block = doc.lines[offset]?.block ?? 0;
     anchorRef.current = block;
     onPosition?.(block);
@@ -218,12 +261,6 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     announced.current = true;
     if (offset > 0) setStatus('resumed where you left off');
   }, [startBlock, doc, offset]);
-
-  useEffect(() => {
-    if (lastWidthRef.current === columns) return;
-    lastWidthRef.current = columns;
-    scrollTo(anchorOffset(doc.lines, anchorRef.current, height));
-  }, [columns, doc, height, scrollTo]);
 
   /** Every followable link in the document, in reading order. */
   const links = useMemo(
@@ -278,6 +315,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   const goTo = useCallback(
     (next: { source: Source; name: string; markdown: boolean }, anchor: string | null, remember: boolean) => {
       if (remember) back.current.push({ source, title, offset, markdown: parseAsMarkdown });
+      navGeneration.current++;
       setSource(next.source);
       setTitle(next.name);
       setParseAsMarkdown(next.markdown);
@@ -335,13 +373,15 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
       setStatus('nothing to go back to');
       return;
     }
+    navGeneration.current++;
+    onBack?.();
     setSource(prev.source);
     setTitle(prev.title);
     setParseAsMarkdown(prev.markdown);
     putLinkIndex(-1);
     setHOffset(0);
-    scrollTo(prev.offset);
-  }, [scrollTo, putLinkIndex]);
+    setPendingOffset(prev.offset);
+  }, [putLinkIndex, onBack]);
 
   /* Reloads are not ordered by the disk. An editor that writes a file twice on
      one save fires two changes, and nothing guarantees the first read resolves
@@ -349,20 +389,33 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
      and win, leaving the reader looking at stale text under a "reloaded" note.
      Only the newest reload is allowed to speak. */
   const reloadGeneration = useRef(0);
+  /* Bumped by every navigation. The generation above orders reloads against
+     each other; this one orders anything slow against the reader having moved
+     on. A reload or a highlight build started on one document and resolving
+     after a link was followed would otherwise replace the document now on
+     screen with the contents of the one left behind. */
+  const navGeneration = useRef(0);
   const doReload = useCallback(async () => {
     if (!reload) return;
     const generation = ++reloadGeneration.current;
+    const nav = navGeneration.current;
     setStatus('reloading…');
     try {
       const next = await reload();
-      if (generation !== reloadGeneration.current) return;
+      if (generation !== reloadGeneration.current || nav !== navGeneration.current) return;
       setSource(next);
       setStatus('reloaded');
     } catch (err) {
-      if (generation !== reloadGeneration.current) return;
+      if (generation !== reloadGeneration.current || nav !== navGeneration.current) return;
       setStatus(`could not reload: ${(err as Error).message}`);
     }
   }, [reload]);
+
+  useEffect(() => {
+    if (pendingOffset === null) return;
+    setPendingOffset(null);
+    scrollTo(pendingOffset);
+  }, [pendingOffset, doc, scrollTo]);
 
   useEffect(() => {
     if (pendingAnchor === null) return;
@@ -375,13 +428,18 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   useEffect(() => {
     if (!upgrade) return;
     let live = true;
+    /* `upgrade` is built once from the document the process opened, so this
+       effect never re-runs and its cleanup only fires on unmount. Following a
+       link before the grammars finished therefore swapped the document being
+       read for a highlighted copy of the one left. */
+    const nav = navGeneration.current;
     /* Highlighting is an enhancement on a document that is already readable on
        screen. If building it fails there is nothing to tell the reader and
        nothing to do — but an unhandled rejection would still take the app
        down, so it is swallowed deliberately rather than by omission. */
     void upgrade()
       .then((next) => {
-        if (live) setSource(next);
+        if (live && nav === navGeneration.current) setSource(next);
       })
       .catch(() => {});
     return () => {
@@ -470,7 +528,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
       const from =
         linkIndexRef.current >= 0
           ? linkIndexRef.current + step * times
-          : (step > 0 ? Math.max(0, links.findIndex((l) => l.row >= offset)) : links.length - 1) +
+          : (step > 0 ? Math.max(0, links.findIndex((l) => l.row >= offsetRef.current)) : links.length - 1) +
             step * (times - 1);
       const at = ((from % links.length) + links.length) % links.length;
       putLinkIndex(at);
@@ -598,14 +656,14 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         // many times — I-15 applies here as much as it does to scrolling.
         let at =
           matchIndexRef.current < 0
-            ? nextMatch(live, offset, backwards)
+            ? nextMatch(live, offsetRef.current, backwards)
             : stepMatch(live, matchIndexRef.current, backwards);
         for (let i = 1; i < repeat; i++) at = stepMatch(live, at, backwards);
         jumpToMatch(at, live);
         return;
       }
       case input === 't':
-        putTocIndex(Math.max(0, doc.toc.findIndex((e) => e.line > offset) - 1));
+        putTocIndex(Math.max(0, doc.toc.findIndex((e) => e.line > offsetRef.current) - 1));
         enterMode('toc');
         return;
       case input === '?':
@@ -615,7 +673,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         // The block you can see is the block you meant. Several visible, the
         // first — anything cleverer would need a selection the reader has to
         // learn about first.
-        const block = doc.code.find((c) => c.to >= offset && c.from < offset + height);
+        const block = doc.code.find((c) => c.to >= offsetRef.current && c.from < offsetRef.current + height);
         if (!block) {
           setStatus('no code block on screen to copy');
           return;
@@ -636,7 +694,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
       default:
     }
   }, [
-    doc, links, offset, height, quit, scrollTo, applyMotion, revealLine, follow, goBack,
+    doc, links, offsetRef, height, quit, scrollTo, applyMotion, revealLine, follow, goBack,
     doReload, commitSearch, jumpToMatch, matches, committed, stdout, enterMode, putQuery,
     putLinkIndex, putTocIndex,
   ]);
@@ -699,9 +757,17 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         ranges.push({ start: selected.start, end: selected.end, style: theme.matchCurrent, cells: true });
       }
       if (ranges.length === 0) return row;
-      return highlightRow(row, doc.lines[line]?.plain ?? '', ranges, columns - 1, level);
+      /* The row's own width, not the viewport's. `composeFrame` is what clips a
+         row to the screen, and it does so *after* this runs — so measuring
+         against the viewport here truncated every row wider than it, and in
+         `scroll` mode that is exactly the rows a reader pans sideways to read.
+         A match near the start of a 200-cell row cut it to 59 and the frame
+         went blank; a match past the cut was skipped and the row survived,
+         which is why it took a particular query to see it. Only rows carrying a
+         match reach this line, so measuring them costs nothing per frame. */
+      return highlightRow(row, doc.lines[line]?.plain ?? '', ranges, ansiWidth(row), level);
     },
-    [liveMatches, matchIndex, selected, doc, columns, theme, level],
+    [liveMatches, matchIndex, selected, doc, theme, level],
   );
 
   let frame = composeFrame(

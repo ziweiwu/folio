@@ -7,6 +7,16 @@ export const FRAME_MS = 16;
 
 export type Scroll = {
   offset: number;
+  /**
+   * The same value, current the instant a key changes it.
+   *
+   * `offset` is state and is therefore a frame behind for the rest of a chunk
+   * of keys. A handler that *branches* on where the viewport is — seeding the
+   * link cursor, the next match, the contents selection, the code block to copy
+   * — has to read this instead, or `Gt` picks the heading `G` was standing on
+   * rather than the one it jumped to. See I-34.
+   */
+  offsetRef: { readonly current: number };
   scrollBy: (delta: number) => void;
   scrollTo: (offset: number) => void;
   atTop: boolean;
@@ -82,6 +92,7 @@ export function useScroll(total: number, height: number, initial = 0): Scroll {
 
   return {
     offset,
+    offsetRef,
     scrollBy,
     scrollTo,
     atTop: offset === 0,

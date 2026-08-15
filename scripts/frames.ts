@@ -20,7 +20,7 @@ import { helpPane, searchBar, tocPane } from '../src/ui/panes.js';
 import { pickTheme } from '../src/ui/theme.js';
 
 export const ROOT = join(import.meta.dirname, '..');
-export const HINTS = '/ search   t toc   ? keys   q quit';
+export const HINTS = ['/ search', 't toc', '? keys', 'q quit'];
 
 export type Spec = {
   id: string;

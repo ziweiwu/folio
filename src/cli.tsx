@@ -287,13 +287,28 @@ async function main(): Promise<void> {
     return;
   }
 
+  /* Position is reported continuously into a local, and written once on the
+     way out — a file write per scroll would be absurd. Declared here, above the
+     callbacks that close over them, because navigation moves them. */
+  let currentFile = options.file === null ? null : resolve(options.file);
+  let currentBlock = 0;
+
+  /* Reloads the document *being read*, not the one the process was started on.
+     After following a link, `r` re-read the original file and put its text on
+     screen under the other file's name. */
   const reload = options.file === null
     ? undefined
-    : async (): Promise<Source> => makeSource(readFileSync(options.file!, 'utf8'), theme.shiki, level);
+    : async (): Promise<Source> => makeSource(readFileSync(currentFile!, 'utf8'), theme.shiki, level);
 
   const watch = options.watch && options.file !== null
     ? (onChange: () => void) => {
-        const watcher = watchFile(options.file!, { persistent: false }, () => onChange());
+        const started = resolve(options.file!);
+        const watcher = watchFile(options.file!, { persistent: false }, () => {
+          /* Only the file this watcher is actually watching. Saving an edit to
+             the file you started on while reading another one through a link
+             used to pull that file's text onto the screen. */
+          if (currentFile === started) onChange();
+        });
         return () => watcher.close();
       }
     : undefined;
@@ -303,6 +318,10 @@ async function main(): Promise<void> {
   /* The base directory follows navigation: after opening a link, the next
      relative link is relative to *that* file, not to the one we started on. */
   let currentDir = options.file === null ? null : dirname(resolve(options.file));
+  /* Mirrors the viewer's own back stack, so going back unwinds the base
+     directory and the file a position is saved against. `openRelative` only
+     ever moved them forwards. */
+  const trail: Array<{ dir: string; file: string }> = [];
 
   const openRelative = currentDir === null
     ? undefined
@@ -316,6 +335,7 @@ async function main(): Promise<void> {
         const asMarkdown = options.markdown ?? isMarkdownPath(found);
         if (currentFile !== null) {
           positions.entries[currentFile] = { block: currentBlock, at: Date.now() };
+          trail.push({ dir: currentDir!, file: currentFile });
         }
         currentDir = dirname(found);
         currentFile = found;
@@ -327,10 +347,17 @@ async function main(): Promise<void> {
         };
       };
 
-  /* Position is reported continuously into a local, and written once on the
-     way out — a file write per scroll would be absurd. */
-  let currentFile = options.file === null ? null : resolve(options.file);
-  let currentBlock = 0;
+  const onBack = () => {
+    const prev = trail.pop();
+    if (!prev) return;
+    if (currentFile !== null) {
+      positions.entries[currentFile] = { block: currentBlock, at: Date.now() };
+    }
+    currentDir = prev.dir;
+    currentFile = prev.file;
+    currentBlock = 0;
+  };
+
   const positions = options.resume && currentFile !== null ? loadPositions() : EMPTY;
   const startBlock = currentFile === null ? null : recall(positions, currentFile);
 
@@ -351,6 +378,7 @@ async function main(): Promise<void> {
         markdown={markdown}
         overflow={options.wrap ? 'wrap' : 'scroll'}
         open={openRelative}
+        onBack={onBack}
         startBlock={startBlock}
         onPosition={(block) => {
           currentBlock = block;

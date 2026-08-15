@@ -110,7 +110,15 @@ LOG3=$(mktemp "${TMPDIR:-/tmp}/umv-hl.XXXXXX")
 { await "$LOG3" "${ESC}[?1049h" 60; printf 'fff'
   # Wait for the highlighted token rather than guessing how long Shiki needs;
   # if it never arrives the check below is the thing that says so.
-  await "$LOG3" '38;2;158;206;106' 30
+  #
+  # This budget must exceed the mount budget above, not undercut it: the
+  # grammars are compiled *after* the viewer mounts, so this marker is always
+  # the later of the two. At 30s a cold Shiki load on a loaded machine ran out
+  # of budget, the quit below fired before the highlighted frame was ever
+  # painted, and the check failed for a reason that had nothing to do with the
+  # app. Waiting longer costs nothing when it is fast -- await returns the
+  # moment the marker lands, so this only bounds the pathological case.
+  await "$LOG3" '38;2;158;206;106' 120
   printf 'q'; sleep 1; } \
   | script -q "$LOG3" bash -c "npx tsx src/cli.tsx --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
 # A code-block background band and a Shiki token colour, neither of which the
@@ -186,7 +194,14 @@ descendants() {
   done
 }
 
-( sleep 30 | script -q "$LOG2" bash -c "$CMD" >/dev/null 2>&1 ) &
+# The sleep is only here to hold stdin open so the viewer stays up until it is
+# signalled. It must outlast every await below it -- with `sleep 30` against a
+# 60s mount budget and a 30s content budget, a slow machine closed stdin first,
+# the viewer exited on EOF, and the SIGINT below was delivered to nothing. That
+# failed silently as a *pass*, because a clean EOF exit restores the terminal
+# too, so the greps still found their bytes. Nothing hangs for this long: the
+# whole pipeline is killed explicitly at the end of the check.
+( sleep 600 | script -q "$LOG2" bash -c "$CMD" >/dev/null 2>&1 ) &
 driver=$!
 
 # Wait for the viewer to actually exist rather than guessing how long it needs.
@@ -208,11 +223,21 @@ if [ "$started" -eq 0 ]; then
 else
   # Mounted is not drawn. Wait for content on the screen before asking it to
   # leave, so the teardown under test is tearing down a running viewer.
-  await "$LOG2" "A terminal markdown viewer" 30
+  await "$LOG2" "A terminal markdown viewer" 60
   # Every descendant, because `npx` and `tsx` each wrap the process that
   # actually runs the app, and only the innermost one can restore anything.
-  # shellcheck disable=SC2046
-  kill -INT $(descendants "$driver") 2>/dev/null
+  targets=$(descendants "$driver")
+  # Assert there is something to signal. Without this the check cannot tell a
+  # viewer that restored the terminal *because it was interrupted* from one
+  # that had already exited on its own and restored it on the way out -- and
+  # the second reads as a pass while testing nothing.
+  if [ -z "${targets// /}" ]; then
+    printf '  FAIL  the viewer was gone before it could be signalled\n'
+    fail=1
+  fi
+  # Unquoted on purpose: this is a list of pids, and each must be its own word.
+  # shellcheck disable=SC2086
+  kill -INT $targets 2>/dev/null
   for _ in $(seq 1 30); do
     kill -0 "$driver" 2>/dev/null || break
     sleep 0.5

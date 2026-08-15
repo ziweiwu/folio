@@ -1,6 +1,7 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
 import { App, type Source } from '../src/app.js';
+import { stripAnsi } from '../src/core/ansi.js';
 import { parseArgs } from '../src/core/options.js';
 import { pickTheme } from '../src/ui/theme.js';
 
@@ -61,6 +62,201 @@ function mount(props: Partial<Parameters<typeof App>[0]> = {}) {
   live = instance;
   return instance;
 }
+
+const SECTIONS = Array.from({ length: 40 }, (_, i) =>
+  `## Section ${i}\n\n${`prose for section ${i} `.repeat(6)}\n`,
+).join('\n');
+
+const setColumns = (n: number) => {
+  (process.stdout as unknown as { columns: number }).columns = n;
+  process.stdout.emit('resize');
+};
+
+describe('I-6 a resize re-anchors the running app, not just the arithmetic', () => {
+  /* I-6's other test asserts on `anchorOffset`, which was always correct. The
+     defect was in the two effects that feed it: nothing in the suite had ever
+     resized a mounted `App`. */
+  it('I-6 keeps the reader on the block they were reading', async () => {
+    const original = process.stdout.columns;
+    const seen: number[] = [];
+    try {
+      setColumns(120);
+      const app = mount({ initial: { text: SECTIONS }, onPosition: (b: number) => seen.push(b) });
+      await settle();
+      for (let i = 0; i < 30; i++) {
+        app.stdin.write('d');
+        await settle();
+      }
+      const before = seen.at(-1)!;
+      expect(before).toBeGreaterThan(0);
+
+      setColumns(50);
+      await settle();
+
+      /* The recorder used to index the *new* layout with the *old* row number,
+         overwrite the anchor with a block the reader had never been on, and the
+         re-anchor then went there — and the same wrong block was saved. */
+      expect(seen.at(-1)).toBe(before);
+      app.unmount();
+    } finally {
+      (process.stdout as unknown as { columns: number }).columns = original;
+    }
+  });
+});
+
+describe('I-34 the viewport the keystroke before it left', () => {
+  const CR = String.fromCharCode(13);
+
+  it('I-34 opens the contents on the heading G jumped to, in one chunk', async () => {
+    /* `offset` is state, so for the rest of a chunk it is a frame behind. `G`
+       then `t` as separate reads worked; `Gt` in one read selected the heading
+       `G` was standing on when the chunk arrived. */
+    const app = mount({ initial: { text: SECTIONS } });
+    await settle();
+    app.stdin.write('Gt');
+    await settle();
+    app.stdin.write(CR);
+    await settle();
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('Section 39');
+    expect(frame).not.toContain('Section 0\n');
+    app.unmount();
+  });
+});
+
+const openGuide = async () => ({ source: { text: '# Guide\n\nshort\n' }, name: 'guide.md', markdown: true });
+
+describe('going back restores the place you left', () => {
+  /* No test in the suite had ever followed a link that *succeeds*: every
+     app-level link test uses an `https://` target, which returns early and
+     never reaches `open`, `goTo` or the back stack. */
+  const CR = String.fromCharCode(13);
+  const TAB = String.fromCharCode(9);
+  const BS = String.fromCharCode(127);
+  const LINKED = Array.from({ length: 40 }, (_, i) =>
+    `## Section ${i}\n\nprose ${i}, see [guide](guide.md) for more.\n`,
+  ).join('\n');
+
+  it('restores the offset when the document returned to is longer than the one left', async () => {
+    const seen: number[] = [];
+    const app = mount({ initial: { text: LINKED }, open: openGuide, onPosition: (b: number) => seen.push(b) });
+    await settle();
+
+    for (let i = 0; i < 20; i++) {
+      app.stdin.write('d');
+      await settle();
+    }
+    app.stdin.write(TAB);
+    await settle();
+    /* After the reveal, not before it: picking a link scrolls it into view, and
+       the back stack remembers where the follow was made from. */
+    const before = seen.at(-1)!;
+    expect(before).toBeGreaterThan(0);
+
+    app.stdin.write(CR);
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('Guide');
+
+    app.stdin.write(BS);
+    await settle();
+
+    /* `goBack` restored the offset from the key handler, where the scroll
+       limits still described the short document being left — so coming back to
+       a longer one clamped the offset to its end, which for a 3-row document
+       is 0, and the reader was dropped at the top of what they had read. */
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).not.toContain('Section 0');
+    expect(seen.at(-1)).toBe(before);
+    app.unmount();
+  });
+});
+
+describe('I-23 copying is reported as sent, never as copied', () => {
+  it('I-23 says sent, because OSC 52 is advisory', async () => {
+    /* The terminal may silently refuse the sequence, so the message must not
+       claim more than actually happened. This was listed as script-enforced and
+       no script mentioned it; the one test that carried the string supplied it
+       to `statusBar` itself, so it would have passed had the app said
+       "copied". */
+    const app = mount({ initial: { text: '# doc\n\n```js\nconst a = 1;\n```\n' } });
+    await settle();
+    app.stdin.write('y');
+    await settle();
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toMatch(/sent \d+ lines? to the clipboard/);
+    expect(frame).not.toContain('copied');
+    app.unmount();
+  });
+});
+
+describe('I-33 a navigation invalidates work started before it', () => {
+  const CR = String.fromCharCode(13);
+  const TAB = String.fromCharCode(9);
+  const LINKED = '# A\n\nsee [guide](guide.md) for more.\n';
+
+  it('I-33 discards a reload that finishes after a link was followed', async () => {
+    /* The generation orders reloads against each other, but nothing invalidated
+       one against the reader moving on — so a reload started on A and resolving
+       after a link to B replaced B with A's text, under a "reloaded" note. */
+    const pending: Array<(s: Source) => void> = [];
+    let fire: (() => void) | null = null;
+    const app = mount({
+      initial: { text: LINKED },
+      open: openGuide,
+      reload: () => new Promise<Source>((resolve) => pending.push(resolve)),
+      watch: (onChange) => {
+        fire = onChange;
+        return () => {};
+      },
+    });
+    await settle();
+
+    fire!();
+    await settle();
+    expect(pending).toHaveLength(1);
+
+    app.stdin.write(TAB);
+    await settle();
+    app.stdin.write(CR);
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('Guide');
+
+    // The read of A lands only now, with B on screen.
+    pending[0]!({ text: '# A\n\nA reloaded from disk\n' });
+    await settle();
+
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('Guide');
+    expect(frame).not.toContain('A reloaded from disk');
+    app.unmount();
+  });
+
+  it('I-33 discards a highlight build that finishes after a link was followed', async () => {
+    /* `upgrade` is built once from the document the process opened, so its
+       effect never re-runs and its cleanup only fires on unmount. */
+    let settleUpgrade: ((s: Source) => void) | null = null;
+    const app = mount({
+      initial: { text: LINKED },
+      open: openGuide,
+      upgrade: () => new Promise<Source>((resolve) => { settleUpgrade = resolve; }),
+    });
+    await settle();
+
+    app.stdin.write(TAB);
+    await settle();
+    app.stdin.write(CR);
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('Guide');
+
+    settleUpgrade!({ text: '# A\n\nA highlighted\n' });
+    await settle();
+
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('Guide');
+    expect(frame).not.toContain('A highlighted');
+    app.unmount();
+  });
+});
 
 describe('I-33 only the newest reload may change the document', () => {
   it('I-33 discards a slow reload that a later one has already superseded', async () => {
@@ -155,7 +351,7 @@ describe('I-15 a search can arrive in a single read', () => {
     const frame = app.lastFrame() ?? '';
     // Back in the document, not sitting in the prompt.
     expect(frame).not.toContain('/cat');
-    expect(frame).toContain('the cat sat');
+    expect(stripAnsi(frame)).toContain('the cat sat');
     app.unmount();
   });
 
@@ -239,7 +435,7 @@ describe('I-34 a keystroke sees the mode the one before it chose', () => {
     const frame = app.lastFrame() ?? '';
     // Committed and found something, rather than searching for the empty string.
     expect(frame).not.toContain('no match');
-    expect(frame).toContain('the cat sat');
+    expect(stripAnsi(frame)).toContain('the cat sat');
     app.unmount();
   });
 
@@ -427,7 +623,7 @@ describe('I-34 Tab and Return arriving together', () => {
     await settle();
     const frame = app.lastFrame() ?? '';
     expect(frame).not.toContain('/cat');
-    expect(frame).toContain('the cat sat');
+    expect(stripAnsi(frame)).toContain('the cat sat');
     app.unmount();
   });
 });

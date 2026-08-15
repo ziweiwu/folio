@@ -18,7 +18,7 @@ import type { ColorLevel } from '../src/core/ansi.js';
 import { ansiToHtml } from './ansi-to-html.js';
 
 const ROOT = join(import.meta.dirname, '..');
-const HINTS = 'j/k scroll   / search   t toc   ? help   q quit';
+const HINTS = ['j/k scroll', '/ search', 't toc', '? help', 'q quit'];
 
 type Spec = {
   id: string;

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
 import { layoutDoc } from '../src/md/layout.js';
 import { sanitizeLine, sanitizeSource } from '../src/core/sanitize.js';
-import { displayWidth } from '../src/core/width.js';
+import { clusters, displayWidth, truncate } from '../src/core/width.js';
 import { fixture, FIXTURES, opts } from './helpers.js';
 
 const WIDTHS = [40, 60, 80, 100, 160, 200];
@@ -37,6 +37,66 @@ describe('I-2 layout measures in display cells, not code units', () => {
   it('I-2 counts a variation-selector emoji as two cells', () => {
     const doc = layoutDoc('⚠️ x', opts({ width: 40, maxWidth: 0 }));
     expect(ansiWidth(doc.lines[0]!.ansi)).toBe(2 + 2 + 1 + 1); // margin, emoji, space, x
+  });
+
+  it('I-2 advances by cluster, so a mark cannot be counted apart from its base', () => {
+    /* `displayWidth` is stateful — U+FE0F widens the character before it — so
+       summing it per code point is not the same as calling it on the string.
+       Every scanner that walked one accumulating width under-counted, and the
+       rows it produced ran past the frame. */
+    for (const [text, cells] of [
+      ['⚠️', 2],
+      ['a⚠️', 3],
+      ['é', 1], // e + U+0301
+      ['1️⃣', 2], // digit + U+FE0F + U+20E3
+    ] as const) {
+      expect(displayWidth(text), text).toBe(cells);
+      expect([...clusters(text)].reduce((n, [, w]) => n + w, 0), text).toBe(cells);
+      // The cut never lands between a base and the marks bound to it.
+      expect([...clusters(text)].map(([c]) => c).join('')).toBe(text);
+    }
+  });
+
+  it('I-1 keeps prose within the frame when every word carries a mark', () => {
+    // 56 cells at 40 columns before the scanners advanced by cluster.
+    for (const width of WIDTHS) {
+      const doc = layoutDoc(`# T\n\n${'a⚠️'.repeat(80)}\n`, opts({ width, maxWidth: 0 }));
+      const over = doc.lines.map((l) => ansiWidth(l.ansi)).filter((w) => w > width);
+      expect(over, `${width} cols`).toEqual([]);
+    }
+  });
+
+  it('I-2 truncates by cluster, never mid-glyph', () => {
+    for (let max = 2; max <= 12; max++) {
+      const cut = truncate('⚠️'.repeat(8), max);
+      expect(displayWidth(cut), `max ${max}`).toBeLessThanOrEqual(max);
+      expect(cut.startsWith('\uFE0F')).toBe(false);
+    }
+  });
+});
+
+describe('I-1 front matter keys are measured in cells', () => {
+  it('I-1 cuts a key wider than its column instead of overrunning the row', () => {
+    /* `padSpans` can only add, so a key longer than the column it was measured
+       against pushed its value flush against itself and carried the row past
+       the frame — 52 cells at 40 columns, with no separator at all. */
+    const src = '---\na-really-very-long-front-matter-key-name: value here\nurl: https://x\n---\n\n# T\n';
+    const doc = layoutDoc(src, opts({ width: 40, maxWidth: 0 }));
+    expect(doc.lines.map((l) => ansiWidth(l.ansi)).filter((w) => w > 40)).toEqual([]);
+    const row = doc.lines.map((l) => stripAnsi(l.ansi)).find((t) => t.includes('value here'))!;
+    expect(row).toContain('…');
+    expect(row).toMatch(/…\s+value here/); // the separator survives
+  });
+
+  it('I-2 aligns a CJK key on cells, not on code units', () => {
+    const doc = layoutDoc('---\n作者名前欄目: someone\nurl: https://x\n---\n\n# T\n', opts({ width: 40, maxWidth: 0 }));
+    const rows = doc.lines.map((l) => stripAnsi(l.ansi));
+    const cjk = rows.find((t) => t.includes('someone'))!;
+    const url = rows.find((t) => t.includes('https://x'))!;
+    // Both values start in the same column, measured in cells.
+    expect(displayWidth(cjk.slice(0, cjk.indexOf('someone')))).toBe(
+      displayWidth(url.slice(0, url.indexOf('https://x'))),
+    );
   });
 });
 

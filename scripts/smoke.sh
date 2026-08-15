@@ -30,7 +30,7 @@ want() { # description, expected exit, command...
   [ "$got" -eq "$expect" ] && ok "$what (exit $got)" || bad "$what (expected exit $expect, got $got)"
 }
 
-echo "exit status"
+echo "exit status (I-17)"
 want "reads a file"                0 $RUN "$DOC"
 want "prints help"                 0 $RUN --help
 want "prints version"              0 $RUN --version

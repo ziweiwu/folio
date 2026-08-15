@@ -76,6 +76,45 @@ export function displayWidth(s: string): number {
   return w;
 }
 
+/**
+ * The marks that bind to the character before them. A subset of `isZeroWidth`:
+ * that one also covers control bytes, which are their own characters and must
+ * not be absorbed into a neighbour.
+ */
+function isCombining(cp: number): boolean {
+  return (
+    (cp >= 0x0300 && cp <= 0x036f) ||
+    (cp >= 0x200b && cp <= 0x200f) ||
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||
+    cp === 0x20e3
+  );
+}
+
+/**
+ * Walk `s` one *cluster* at a time — a base code point with every mark that
+ * binds to it — yielding each with the cells it occupies.
+ *
+ * `displayWidth` is deliberately stateful: U+FE0F widens the character before
+ * it. Summing it per code point is therefore not the same as calling it on the
+ * whole string — `⚠️` measures 2, but its two code points measure 1 and 0. Any
+ * scanner that accumulates width while walking a string has to advance by
+ * cluster or it under-counts, and a cut taken at a code-point boundary can
+ * strand a mark from its base. Both halves of I-2, and the same trap
+ * `expandTabs` documents in `sanitize.ts`.
+ */
+export function* clusters(s: string): Generator<readonly [string, number]> {
+  let cur = '';
+  for (const ch of s) {
+    if (cur !== '' && isCombining(ch.codePointAt(0)!)) {
+      cur += ch;
+      continue;
+    }
+    if (cur !== '') yield [cur, displayWidth(cur)];
+    cur = ch;
+  }
+  if (cur !== '') yield [cur, displayWidth(cur)];
+}
+
 /** Truncate to at most `max` cells, appending an ellipsis when cut. */
 export function truncate(s: string, max: number): string {
   if (max <= 0) return '';
@@ -83,8 +122,7 @@ export function truncate(s: string, max: number): string {
   if (max === 1) return '…';
   let out = '';
   let w = 0;
-  for (const ch of s) {
-    const cw = displayWidth(ch);
+  for (const [ch, cw] of clusters(s)) {
     if (w + cw > max - 1) break;
     out += ch;
     w += cw;

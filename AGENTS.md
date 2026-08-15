@@ -112,6 +112,20 @@ commit.
 - **Assert the state a check leaves behind, not that a byte appeared.** Asking
   whether `?2004l` occurs anywhere in a log passes on a run that turned the mode
   back on afterwards. Read the ordered toggles and check the last one.
+- **A check must not be able to pass without exercising what it names.** The
+  SIGINT check held the viewer's stdin open with `sleep 30` while the `await`s
+  before the signal were allowed 90s. On a slow machine stdin closed first, the
+  viewer exited on EOF, and the signal went to nothing — but a clean exit
+  restores the terminal too, so the greps still found their bytes and it
+  reported *ok*. A fixed sleep bounding a process's lifetime is the same trap as
+  one bounding its readiness. Give the holder more time than every wait beneath
+  it can consume, and assert the thing under test is still alive at the moment
+  you act on it.
+- **A later marker needs a longer budget than the one before it.** Waiting for
+  Shiki's highlighted token got 30s where mounting got 60, though the grammars
+  compile strictly after the mount. `await` returns the instant its marker
+  lands, so a generous budget is free on a fast machine and only bounds the
+  pathological case.
 
 ## Releasing
 

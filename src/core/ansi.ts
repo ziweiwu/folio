@@ -122,6 +122,35 @@ export function paint(text: string, style: Style, level: ColorLevel): string {
   return open === '' ? text : open + text + RESET;
 }
 
+/**
+ * Style a span whose only job is to stand out from the text around it.
+ *
+ * `paint` returns the text untouched when colour is off, which is right for
+ * everything the layout draws: a heading keeps its rule, a task its box, code
+ * its frame, so nothing is lost along with the colour. Interactive state has no
+ * such second channel. A search match differs from its surroundings by
+ * background alone, so at level 0 it disappeared entirely and the match count in
+ * the status bar was the only evidence it existed — colour as the only signal,
+ * which pillar 2 does not allow.
+ *
+ * Reverse video stands in for the fg/bg pair. It is an attribute rather than a
+ * colour, so `NO_COLOR` is still honoured — it asks for no colour, not for no
+ * emphasis, the same way `less` standouts its matches. Attributes the style
+ * already carries survive, so the current match keeps its bold and stays
+ * distinct from the rest. Width is unaffected: these are zero-cell bytes, and
+ * every composer measures with `ansiWidth`.
+ *
+ * Only for spans the reader is currently acting on. Anything the document
+ * itself contributes goes through `paint`, so piped output stays clean (I-11).
+ */
+export function paintState(text: string, style: Style, level: ColorLevel): string {
+  if (level !== 0) return paint(text, style, level);
+  const parts = ['7'];
+  if (style.bold) parts.push('1');
+  if (style.underline) parts.push('4');
+  return `\x1b[${parts.join(';')}m${text}${RESET}`;
+}
+
 /** An OSC 8 hyperlink, which capable terminals make clickable. */
 export function hyperlink(text: string, url: string, level: ColorLevel): string {
   if (level === 0) return text;

@@ -56,9 +56,21 @@ export type StatusInfo = {
   offset: number;
   height: number;
   total: number;
-  /** Right-hand hints; dropped from the end when the bar is too narrow. */
-  hints: string;
+  /**
+   * Right-hand legend, in display order. Dropped one item at a time from the
+   * *front* when the bar is too narrow, so the items that survive longest are
+   * the last two: `q quit`, the escape hatch a reader stuck in an unfamiliar
+   * viewer needs most, and `? keys`, which is where all the rest of this list
+   * lives anyway. It used to be one string shown whole or not at all, which
+   * meant every terminal under 65 columns — an ordinary tmux split — got no
+   * legend and no `?` to find one, while the panes beside it had degraded
+   * gracefully all along.
+   */
+  hints: readonly string[];
 };
+
+/** Between legend items. Wide enough that the pairs do not read as one run. */
+const HINT_SEP = '   ';
 
 /** Percentage of the document above the fold, as a reader would describe it. */
 export function scrollPercent(offset: number, height: number, total: number): number {
@@ -77,6 +89,10 @@ export function statusBar(info: StatusInfo, width: number, theme: Theme, level: 
 
   const pct = `${scrollPercent(info.offset, info.height, info.total)}%`.padStart(4);
   const sep = paint('  ·  ', statusMuted, level);
+  /* The section is fitted against the whole legend even though the legend may
+     later give some of itself up. Letting the section expand into room the
+     hints have not yet vacated would make the two fight over the same cells. */
+  const hintsFull = info.hints.join(HINT_SEP);
 
   let left =
     paint(' ', status, level) +
@@ -85,7 +101,7 @@ export function statusBar(info: StatusInfo, width: number, theme: Theme, level: 
     paint(pct, status, level);
 
   if (info.section) {
-    const room = width - ansiWidth(left) - ansiWidth(sep) - ansiWidth(info.hints) - 4;
+    const room = width - ansiWidth(left) - ansiWidth(sep) - ansiWidth(hintsFull) - 4;
     if (room > 12) left += sep + paint(truncate(info.section, room), statusMuted, level);
   }
 
@@ -106,7 +122,18 @@ export function statusBar(info: StatusInfo, width: number, theme: Theme, level: 
 
   // Two cells of daylight, or the legend reads as part of whatever precedes it.
   const room = width - ansiWidth(left) - 1;
-  const hints = room >= ansiWidth(info.hints) + 2 ? paint(info.hints, statusMuted, level) : '';
+  /* Longest suffix that fits. Dropping from the front rather than truncating
+     the string keeps every item that is shown a whole item — half of `? keys`
+     is not a hint, it is noise. */
+  let shown = '';
+  for (let i = 0; i < info.hints.length; i++) {
+    const candidate = info.hints.slice(i).join(HINT_SEP);
+    if (room >= ansiWidth(candidate) + 2) {
+      shown = candidate;
+      break;
+    }
+  }
+  const hints = shown === '' ? '' : paint(shown, statusMuted, level);
   const bar = padAnsi(left, width - ansiWidth(hints) - 1, status, level) + hints + paint(' ', status, level);
   // The bar is the one row that must be exactly the terminal width — a short
   // one leaves the previous frame's pixels showing through.

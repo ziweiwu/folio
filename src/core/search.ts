@@ -1,4 +1,4 @@
-import { paint, sliceAnsi, stripAnsi, type ColorLevel, type Style } from './ansi.js';
+import { ansiWidth, paintState, sliceAnsi, stripAnsi, type ColorLevel, type Style } from './ansi.js';
 import { displayWidth } from './width.js';
 import type { Line } from './types.js';
 
@@ -85,6 +85,14 @@ export function highlightRow(
   level: ColorLevel,
 ): string {
   if (ranges.length === 0) return row;
+  /* The row's own width, which is what the tail below is spliced against.
+     Taking it from `width` let a caller that measured against the viewport cut
+     the row down to it — and in `scroll` mode a wide row is deliberately longer
+     than the viewport, so highlighting a match near its start blanked the very
+     part the reader had panned to. Clipping a row to the screen is
+     `composeFrame`'s job and happens after this; `width` only decides which
+     ranges are near enough to bother with. */
+  const full = ansiWidth(row);
   let out = row;
   /* Right to left, so each splice leaves the offsets of the ones still to come
      untouched. */
@@ -94,9 +102,9 @@ export function highlightRow(
     const from = range.cells ? range.start : displayWidth(plain.slice(0, range.start));
     const to = range.cells ? range.end : displayWidth(plain.slice(0, range.end));
     if (from >= width || to <= from) continue;
-    const end = Math.min(to, width);
+    const end = Math.min(to, full);
     const text = stripAnsi(sliceAnsi(out, from, end));
-    out = sliceAnsi(out, 0, from) + paint(text, range.style, level) + sliceAnsi(out, end, width);
+    out = sliceAnsi(out, 0, from) + paintState(text, range.style, level) + sliceAnsi(out, end, full);
   }
   return out;
 }

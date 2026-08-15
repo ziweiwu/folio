@@ -211,7 +211,7 @@ See [AGENTS.md](AGENTS.md) for the working agreement, and
 [INVARIANTS.md](INVARIANTS.md) for the contract this is built against.
 
 ```sh
-npm test              # 192 unit and property tests
+npm test              # 404 unit and property tests
 npm run lint && npm run typecheck && npm run build
 npm run verify:smoke  # the no-terminal paths
 npm run verify:pty    # a real pty: drive it, signal it, check what it restored

@@ -6,6 +6,7 @@ import { inlineSpans, type InlineContext } from './inline.js';
 import { layoutCode } from './code.js';
 import { layoutTable } from './tables.js';
 import { parseMarkdown, type FrontMatter } from './parse.js';
+import { displayWidth, truncate } from '../core/width.js';
 import { sanitizeSource } from '../core/sanitize.js';
 
 /** Breathing room between the terminal edge and the text column. */
@@ -258,13 +259,18 @@ function renderTokens(tokens: Token[], ctx: Ctx, depth: number): void {
 
 function renderFrontMatter(fm: FrontMatter, ctx: Ctx): void {
   const { theme } = ctx.opts;
-  const keyWidth = Math.min(20, Math.max(...fm.map(([k]) => k.length)));
+  /* Display cells, not `String.length` — a CJK key is twice the cells its
+     length claims, and the column it sits in is measured in cells (I-2). The
+     key is then cut to the cap it was measured against: `padSpans` can only
+     add, so a key longer than `keyWidth` used to push its value flush against
+     itself with no separator at all and carry the row past the frame (I-1). */
+  const keyWidth = Math.min(20, Math.max(...fm.map(([k]) => displayWidth(k))));
   /* The key column goes through the marker mechanism rather than into the text
      itself: `emit` normalises runs of whitespace, so padding written into a
      span would be collapsed back to one space and the column would not line
      up. Anything aligned has to live in the lead, not the body. */
   for (const [k, v] of fm) {
-    const marker: Span[] = [{ text: k, style: theme.frontMatterKey }];
+    const marker: Span[] = [{ text: truncate(k, keyWidth), style: theme.frontMatterKey }];
     const row: Ctx = { ...ctx, hang: keyWidth + 2, pending: { marker } };
     emit(row, [{ text: v, style: theme.frontMatterValue }]);
   }
