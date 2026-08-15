@@ -51,6 +51,29 @@ refute() {
   fi
 }
 
+# Wait for a marker to show up in the typescript a `script` run is writing.
+#
+# Every drive block below used to open with a fixed sleep and then start typing.
+# That is a race with the cold `npx tsx` compile, and on a machine busy enough
+# to lose it the whole key script was delivered before the viewer had mounted —
+# so the checks failed for reasons that had nothing to do with the app. The
+# signal path already polled the log instead, and it was the one that did not
+# flake, so the rest now do the same.
+await() { # file, pattern, seconds
+  local file=$1 pattern=$2 limit=${3:-40} waited=0
+  while [ "$waited" -lt "$((limit * 4))" ]; do
+    grep -qaF "$pattern" "$file" 2>/dev/null && return 0
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+# One throwaway run so the transpile is on disk before anything is timed. tsx
+# caches to disk between processes, so this is paid once instead of by whichever
+# check happens to go first.
+npx tsx src/cli.tsx test/fixtures/kitchen-sink.md >/dev/null 2>&1
+
 echo "pty: driving '$CMD'"
 # Scroll, half-page, ends, search, next match, contents, help, then quit.
 # Typed the way a person types, one key at a time, rather than shipped as a
@@ -59,6 +82,7 @@ echo "pty: driving '$CMD'"
 # typing (I-35) — so a driver that sends its whole script at once is testing a
 # path no keyboard produces.
 {
+  await "$LOG" "${ESC}[?1049h" 60
   for k in j j j j d u ' ' G g / s c r o l l; do printf '%s' "$k"; sleep 0.05; done
   printf '\r'; sleep 0.3
   for k in n n t; do printf '%s' "$k"; sleep 0.15; done
@@ -83,7 +107,11 @@ refute  "no React error boundary output"      "The above error occurred"
 
 echo "syntax highlighting arrives after first paint (I-14)"
 LOG3=$(mktemp "${TMPDIR:-/tmp}/umv-hl.XXXXXX")
-{ sleep 4; printf 'fff'; sleep 2; printf 'q'; sleep 2; } \
+{ await "$LOG3" "${ESC}[?1049h" 60; printf 'fff'
+  # Wait for the highlighted token rather than guessing how long Shiki needs;
+  # if it never arrives the check below is the thing that says so.
+  await "$LOG3" '38;2;158;206;106' 30
+  printf 'q'; sleep 1; } \
   | script -q "$LOG3" bash -c "npx tsx src/cli.tsx --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
 # A code-block background band and a Shiki token colour, neither of which the
 # unhighlighted first frame can produce.
@@ -111,7 +139,9 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # outcomes apart: the crash prints the same words in its stack trace, and the
 # screen is restored on the way out either way. What separates them is whether
 # anything is still there to draw the next frame.
-{ sleep 5; printf '\t'; sleep 1; printf '\r'; sleep 2; printf '?'; sleep 2; printf 'q'; sleep 2; } \
+{ await "$LOG4" "${ESC}[?1049h" 60; printf '\t'; sleep 0.5; printf '\r'
+  await "$LOG4" 'permission denied' 20
+  printf '?'; sleep 1; printf 'q'; sleep 1; } \
   | script -q "$LOG4" bash -c "npx tsx src/cli.tsx $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
   printf '  ok    reports an unreadable link target\n'
@@ -170,17 +200,15 @@ driver=$!
 # before the viewer is, so finding one of those and then waiting a few seconds
 # is really just a fixed wait wearing a disguise.
 started=0
-for _ in $(seq 1 80); do
-  if grep -qaF "${ESC}[?1049h" "$LOG2"; then started=1; break; fi
-  sleep 0.5
-done
+await "$LOG2" "${ESC}[?1049h" 60 && started=1
 
 if [ "$started" -eq 0 ]; then
   printf '  FAIL  the viewer never started\n'
   fail=1
 else
-  # Mounted, but let the first frame finish before asking it to leave.
-  sleep 1
+  # Mounted is not drawn. Wait for content on the screen before asking it to
+  # leave, so the teardown under test is tearing down a running viewer.
+  await "$LOG2" "A terminal markdown viewer" 30
   # Every descendant, because `npx` and `tsx` each wrap the process that
   # actually runs the app, and only the innermost one can restore anything.
   # shellcheck disable=SC2046
@@ -211,11 +239,17 @@ fi
 # from the line above because it is a different owner and a different failure:
 # the reader gets their shell back, but every paste into it arrives wrapped in
 # `\e[200~`. See I-7, I-35.
-if grep -qaF "${ESC}[?2004h" "$LOG2" && ! grep -qaF "${ESC}[?2004l" "$LOG2"; then
+# The *last* toggle is what the reader is left with, so asking merely whether a
+# `?2004l` appears anywhere would pass on a log that enabled paste again after
+# disabling it. This reads the ordered toggles and checks the one that wins.
+paste_final=$(perl -0777 -ne 'my $last = ""; while (/\e\[\?2004([hl])/g) { $last = $1 } print $last' "$LOG2")
+if [ "$paste_final" = "h" ]; then
   printf '  FAIL  left bracketed paste enabled after SIGINT (I-35)\n'
   fail=1
-else
+elif [ "$paste_final" = "l" ]; then
   printf '  ok    restored bracketed paste after SIGINT (I-35)\n'
+else
+  printf '  ok    bracketed paste was never enabled (I-35)\n'
 fi
 rm -f "$LOG2"
 
