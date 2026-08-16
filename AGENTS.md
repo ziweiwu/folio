@@ -36,8 +36,13 @@ npm. They are **generated from real frames**, never hand-made, never cropped
 from a terminal.
 
 ```sh
-npm run screenshots     # regenerates all of docs/*.png
+npm run screenshots           # regenerates all of docs/*.png
+npm run verify:screenshots    # are they still current?
 ```
+
+`screenshots` needs Chrome or Chromium to rasterise; it looks in the usual
+places on macOS and Linux, and `$CHROME` overrides. `verify:screenshots` needs
+neither — it compares frames, which is why CI can run it on any runner.
 
 - **Regenerate them whenever rendering changes** — the theme, the layout engine,
   the chrome, the panes, or anything in `src/ui/`. A screenshot that no longer
@@ -49,7 +54,13 @@ npm run screenshots     # regenerates all of docs/*.png
   Relative paths work on GitHub and break on npm.
 - Screenshots come from `scripts/frames.ts`, which the review page shares, so a
   screenshot cannot drift from what the viewer draws. Add a new shot by adding a
-  `Spec` to `scripts/gen-png.ts` — do not build frames by hand.
+  `Spec` to `SHOTS` in `scripts/frames.ts` — do not build frames by hand.
+- `npm run screenshots` also writes `docs/frames.sha256`, a digest of the frames
+  as the app drew them. `verify:screenshots` recomputes it, so CI catches a
+  rendering change that forgot the screenshots. It hashes the frames rather than
+  the PNGs on purpose: rasterisation differs between a laptop and a runner, so
+  comparing image bytes would fail for reasons that have nothing to do with the
+  app.
 
 Run `npm run preview:html` and publish `docs/preview.html` when a change needs a
 visual sign-off. Colour cannot be reviewed through a terminal transcript.
@@ -61,9 +72,18 @@ implying success.
 
 ```sh
 npm run typecheck && npm run lint && npm test && npm run build
-npm run verify:smoke    # exit status, piping, NO_COLOR, redirected stdin
-npm run verify:pty      # a real pty: drive it, signal it, check what it restored
+npm run verify:smoke          # exit status, piping, NO_COLOR, redirected stdin
+npm run verify:screenshots    # docs/*.png still match what the app draws
+npm run verify:pty            # a real pty: drive it, signal it, check what it restored
 ```
+
+Everything but `verify:pty` also runs as a `Stop` hook
+(`.claude/hooks/verify-gate.py`), so a turn that leaves the tree failing is
+refused rather than summarised. The hook skips when nothing under `src/`,
+`test/`, `scripts/` or the manifests has changed, and blocks at most once per
+tree state so a failure it cannot fix never traps the session. `verify:pty` is
+excluded there because it is minutes long and needs a real pty — CI carries it
+on a macOS runner instead.
 
 `verify:pty` is the one that matters most. A test renderer never touches real
 terminal I/O, so it cannot catch a raw-mode crash on launch or an escape
@@ -87,45 +107,15 @@ commit.
 
 - **`bin` points at compiled output.** `npm link` and the global install run
   `dist/`, so source edits do nothing until `npm run build`.
-- **Anything aligned into a column must live in a row's *lead*, not its body.**
-  The wrapper collapses runs of whitespace, so padding written into a span is
-  silently eaten. This broke front matter and link references.
-- **Ink parses one terminal read as one keypress.** A held key arrives as
-  `"jjjj"`, so handlers must go through `parseBurst` rather than comparing
-  `input === 'j'`.
-- **Verification scripts must be hermetic.** They point `XDG_STATE_HOME` at a
-  temporary directory. Without that they inherit the reader's saved positions
-  and pass or fail according to what was last read.
-- **Never measure layout with `String.length`.** Wide CJK and emoji occupy two
-  cells, combining marks zero. Use `displayWidth`.
-- **The shell scripts run on GNU too.** `verify:smoke` is a CI job on
-  ubuntu-latest, and BSD-only syntax passes locally and fails only there.
-  `mktemp -t name` is the one that bit: GNU reads the argument as a template and
-  rejects it for having no `X`s, so the variable came back empty and the checks
-  wrote to `/`. Pass a real template — `mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX"` —
-  and assert you got a path back.
-- **Never open a pty check with a fixed sleep.** A cold `npx tsx` compile can
-  outlast any sleep you pick, and the keys then arrive before the viewer has
-  mounted — which fails the check for a reason that has nothing to do with the
-  app, but only on a busy machine. Poll the typescript for a marker instead:
-  `await "$LOG" "$ESC[?1049h"` for mounted, and the thing under test for done.
-- **Assert the state a check leaves behind, not that a byte appeared.** Asking
-  whether `?2004l` occurs anywhere in a log passes on a run that turned the mode
-  back on afterwards. Read the ordered toggles and check the last one.
-- **A check must not be able to pass without exercising what it names.** The
-  SIGINT check held the viewer's stdin open with `sleep 30` while the `await`s
-  before the signal were allowed 90s. On a slow machine stdin closed first, the
-  viewer exited on EOF, and the signal went to nothing — but a clean exit
-  restores the terminal too, so the greps still found their bytes and it
-  reported *ok*. A fixed sleep bounding a process's lifetime is the same trap as
-  one bounding its readiness. Give the holder more time than every wait beneath
-  it can consume, and assert the thing under test is still alive at the moment
-  you act on it.
-- **A later marker needs a longer budget than the one before it.** Waiting for
-  Shiki's highlighted token got 30s where mounting got 60, though the grammars
-  compile strictly after the mount. `await` returns the instant its marker
-  lands, so a generous budget is free on a fast machine and only bounds the
-  pathological case.
+
+The rest are scoped to where they apply, so they load when you open the file
+rather than in every session:
+
+- `.claude/rules/rendering.md` — `src/**`: lead-not-body alignment, `parseBurst`
+  for held keys, `displayWidth` instead of `String.length`.
+- `.claude/rules/verification.md` — `scripts/**` and `test/**`: hermetic state,
+  GNU-compatible `mktemp`, never a fixed sleep, assert the state a check leaves
+  behind.
 
 ## Releasing
 
