@@ -12,26 +12,39 @@
  *   FORCE_COLOR=3 npm run screenshots
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { ansiToHtml } from './ansi-to-html.js';
-import { renderFrame, ROOT, type Spec } from './frames.js';
+import { digestFrames, renderFrame, ROOT, SHOTS } from './frames.js';
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+/**
+ * Any Chrome will do -- it only rasterises, and the receipt CI checks is hashed
+ * from the frames, not the pixels. Hardcoding the macOS path left a Linux
+ * contributor who changed rendering with a red `verify:screenshots` and no way
+ * to regenerate what it was asking for. $CHROME overrides.
+ */
+const CHROME_CANDIDATES = [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+];
+
+const CHROME = process.env.CHROME ?? CHROME_CANDIDATES.find((p) => existsSync(p));
+if (!CHROME) {
+  console.error(
+    'no Chrome found. Install Google Chrome or Chromium, or point $CHROME at one:\n' +
+      CHROME_CANDIDATES.map((p) => `  ${p}`).join('\n'),
+  );
+  process.exit(1);
+}
 
 const GROUND = {
   dark: { fg: '#c0caf5', bg: '#1a1b26' },
   light: { fg: '#24292f', bg: '#ffffff' },
 };
 
-const SHOTS: Spec[] = [
-  { id: 'hero', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 30, theme: 'dark', level: 3 },
-  { id: 'code', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 26, theme: 'dark', level: 3, scrollTo: 'Code' },
-  { id: 'search', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 22, theme: 'dark', level: 3, search: 'scroll' },
-  { id: 'contents', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 24, theme: 'dark', level: 3, overlay: 'toc' },
-  { id: 'wide', file: 'test/fixtures/wide.md', cols: 92, rows: 18, theme: 'dark', level: 3, hOffset: 40 },
-  { id: 'light', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 26, theme: 'light', level: 3, scrollTo: 'Tables' },
-];
 
 /** Chrome measures in CSS pixels, so the window has to match the type metrics. */
 const FONT_PX = 14;
@@ -60,8 +73,11 @@ mkdirSync(outDir, { recursive: true });
 const tmp = join(ROOT, '.screenshot-tmp');
 mkdirSync(tmp, { recursive: true });
 
+const drawn: { id: string; rows: string[] }[] = [];
+
 for (const spec of SHOTS) {
   const { rows } = await renderFrame(spec);
+  drawn.push({ id: spec.id, rows });
   const html = ansiToHtml(rows, GROUND[spec.theme]);
   const file = join(tmp, `${spec.id}.html`);
   writeFileSync(file, page(html, GROUND[spec.theme], spec.cols, spec.rows));
@@ -85,4 +101,12 @@ for (const spec of SHOTS) {
 }
 
 rmSync(tmp, { recursive: true, force: true });
+
+// The freshness receipt. CI compares this against the frames as they are drawn
+// then, which is how a rendering change that forgot the screenshots gets caught.
+// Hashed from the frames just rasterised rather than from a second render, so
+// the receipt cannot describe frames other than the ones in docs/ -- and the
+// six frames are not composed twice per run.
+writeFileSync(join(outDir, 'frames.sha256'), `${await digestFrames(drawn)}\n`);
+
 console.error(`\n${SHOTS.length} screenshots written to docs/`);

@@ -11,7 +11,7 @@ STATE=$(mktemp -d "${TMPDIR:-/tmp}/umv-smoke.XXXXXX")
 # the argument as a template and wants at least three X's. It used to fail
 # harmlessly here because $STATE was only ever XDG_STATE_HOME, but the checks
 # below now write files into it, and an empty $STATE aims those at /.
-[ -n "$STATE" ] && [ -d "$STATE" ] || { echo "smoke: could not create a temp dir" >&2; exit 1; }
+[ -n "$STATE" ] && [ -d "$STATE" ] || { echo "smoke: hermetic state dir (I-24) could not be created" >&2; exit 1; }
 export XDG_STATE_HOME="$STATE"
 trap 'rm -rf "$STATE"' EXIT
 
@@ -39,14 +39,14 @@ want "rejects a bad width"         2 $RUN --width 3
 want "reports a missing file"      1 $RUN nope.md
 
 echo "piping"
-if $RUN "$DOC" </dev/null | grep -qa $'\033'; then bad "piped output has no escape codes"; else ok "piped output has no escape codes"; fi
-if NO_COLOR=1 $RUN "$DOC" </dev/null | grep -qa $'\033'; then bad "NO_COLOR output has no escape codes"; else ok "NO_COLOR output has no escape codes"; fi
+if $RUN "$DOC" </dev/null | grep -qa $'\033'; then bad "piped output has no escape codes (I-11)"; else ok "piped output has no escape codes (I-11)"; fi
+if NO_COLOR=1 $RUN "$DOC" </dev/null | grep -qa $'\033'; then bad "NO_COLOR output has no escape codes (I-11)"; else ok "NO_COLOR output has no escape codes (I-11)"; fi
 if FORCE_COLOR=3 $RUN "$DOC" </dev/null | grep -qa $'\033'; then ok "FORCE_COLOR keeps colour, for less -R"; else bad "FORCE_COLOR keeps colour, for less -R"; fi
-if cat "$DOC" | $RUN 2>/dev/null | grep -qa 'Kitchen Sink'; then ok "reads a document from stdin"; else bad "reads a document from stdin"; fi
+if cat "$DOC" | $RUN 2>/dev/null | grep -qa 'Kitchen Sink'; then ok "reads a document from stdin (I-8)"; else bad "reads a document from stdin (I-8)"; fi
 
 echo "degrading"
 want "survives an empty stdin"     0 $RUN
-if $RUN </dev/null >/dev/null 2>&1; then ok "does not crash on redirected stdin"; else bad "does not crash on redirected stdin"; fi
+if $RUN </dev/null >/dev/null 2>&1; then ok "does not crash on redirected stdin (I-12)"; else bad "does not crash on redirected stdin (I-12)"; fi
 if $RUN --plain "$DOC" </dev/null | grep -qa '☑'; then ok "keeps task state without colour"; else bad "keeps task state without colour"; fi
 # Measured in characters, not bytes: box-drawing glyphs are three bytes each,
 # so a byte count would flag a perfectly sane 80-column line.

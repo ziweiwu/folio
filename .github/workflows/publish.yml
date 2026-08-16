@@ -35,6 +35,15 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # The release gate must not be weaker than the PR gate: a release cut from
+      # a commit that never went through a pull request would otherwise publish
+      # without the CLI-citizenship checks ever running, and with docs/*.png --
+      # the images the README shows on the package page -- never checked against
+      # what the app draws. verify:pty is the one gap: it needs a macOS runner,
+      # and splitting the publish across two jobs to get it would put the OIDC
+      # token in a job that does not build.
+      - run: npm run verify:smoke
+      - run: npm run verify:screenshots
 
       - name: Check the tag matches the version in package.json
         if: github.event_name == 'release'
