@@ -1,24 +1,27 @@
 # folio invariants
 
-The contract this viewer is built against. Every invariant is numbered and has
-at least one test whose name starts with its number, so the mapping is
-mechanically checkable:
+The contract this viewer is built against. Every invariant is numbered, and its
+number is named either by a test title or by the label a verification script
+prints, so selecting its guard is mechanical:
 
 ```
-npx vitest run -t "I-1"
+npx vitest run -t "I-6"     # runs exactly the resize-anchoring guard
 ```
 
-Seven of them — I-7, I-12, I-14, I-17, I-30, I-31 and I-32 — are enforced by the
-scripts under `scripts/` rather than by unit tests, because they are about real
-terminal and process behaviour that a test renderer cannot exercise. I-8, I-11
-and I-29 are covered both ways.
+Some invariants are enforced only by the scripts under `scripts/`, because they
+are about real terminal and process behaviour that a test renderer cannot
+exercise; a few are covered both ways. Which are which is in the `Where` column
+of each row below, and nowhere else — the header used to carry that as two
+hand-written lists, and both of them drifted.
 
 The mapping is checked by `test/invariants.test.ts`, which reads the tables
-below and fails when an invariant has nothing carrying its number. It exists
+below and fails when an invariant is named by nothing runnable. It exists
 because the claim was made and never enforced: I-17, I-22 and I-23 had all
 drifted uncovered, and `vitest run -t "I-22 "` reports every test skipped and
 still exits 0 — so the check the claim suggested passed loudest exactly when it
-found nothing.
+found nothing. It searches test titles and script labels rather than file text,
+because the first version searched the text and I-8, I-12 and I-24 turned out to
+be carried by a comment apiece.
 
 ## Rendering and layout
 
@@ -41,7 +44,7 @@ found nothing.
 
 | # | Invariant | Where |
 |---|---|---|
-| I-7 | The alternate screen, the cursor, mouse reporting and bracketed paste are restored on **every** exit path — normal return, `q`, Ctrl-C, SIGINT/SIGTERM/SIGHUP, and an unhandled throw. Restoration is idempotent, and the teardown owns all four rather than leaving any to a framework: bracketed paste is requested through Ink, which only turns it off when React unmounts, and a signal handler exits before that — leaving the reader a shell that wraps every paste in `\e[200~` | `ui/screen.ts` · `scripts/verify-pty.sh` |
+| I-7 | The alternate screen, the cursor, mouse reporting and bracketed paste are restored on **every** exit path — normal return, `q`, Ctrl-C, SIGINT/SIGTERM/SIGHUP, and an unhandled throw. Restoration is idempotent, and the teardown owns all four rather than leaving any to a framework: bracketed paste is requested through Ink, which only turns it off when React unmounts, and a signal handler exits before that — leaving the reader a shell that wraps every paste in `\e[200~` | `ui/screen.ts` · `scripts/smoke.sh` · `scripts/verify-pty.sh` |
 | I-8 | Raw mode is never requested unless there is a terminal on both ends. A pipe on stdin borrows `/dev/tty` for keys, or falls back to printing | `cli.tsx` · `scripts/smoke.sh` |
 | I-31 | A failure in a callback the host supplied becomes a status message, never a crash. `stat` succeeding does not mean a file can be read, so following a link may reject after the viewer has already committed to it — and a rejection React cannot render takes the whole viewer down with a blank screen | `app.tsx` · `cli.tsx` · `scripts/verify-pty.sh` |
 
@@ -53,7 +56,7 @@ found nothing.
 | I-10 | The viewport composes exactly `rows` rows whatever the document's size, and every row is padded to the full width so no part of the previous frame shows through | `ui/chrome.ts` · `test/viewport.test.ts` |
 | I-14 | First paint never waits for syntax highlighting. The document is drawn unhighlighted and replaced when the grammars are ready — the 95 ms of highlighting in a 200-code-block document costs nothing at open | `cli.tsx` · `app.tsx` · `scripts/verify-pty.sh` |
 | I-34 | A keystroke sees what the keystroke before it chose, and a chunk holding several keys is applied as all of them. Every value the handler branches on — the mode, the query, the search and link cursors, the contents cursor, and the viewport's own offset — is read from a ref that is current the instant a key changes it, never from state a frame behind. And Ink does not split `⇥` or `⏎` out of a chunk the way it splits backspace, because both can appear in pasted text, so a chunk containing one is handled by inspecting the chunk rather than by trusting `key.tab`/`key.return`. Otherwise `/cat` then `q` quits the viewer, `jjjj⏎` in the contents picks the heading it started on, `⇥⏎` never follows a link, and a query typed fast is never run | `app.tsx` · `test/app.test.tsx` |
-| I-35 | Pasted text is content, never commands. Bracketed paste is requested so the terminal itself says which chunks are pastes, and those go to their own handler — into the query when the search box is open, and otherwise refused with a note. That is the lock. A chunk of more than eight *different* keys is additionally never taken for typing, which catches a pasted sentence or command on a terminal too old to bracket it; it is a partial mitigation, not a second lock, and by construction does not cover a paste under that length, one key repeating, or a paste split across reads. Closing those would mean rejecting real fast typing | `app.tsx` · `core/keys.ts` · `test/app.test.tsx` · `test/viewport.test.ts` |
+| I-35 | Pasted text is content, never commands. Bracketed paste is requested so the terminal itself says which chunks are pastes, and those go to their own handler — into the query when the search box is open, and otherwise refused with a note. That is the lock. A chunk of more than eight *different* keys is additionally never taken for typing, which catches a pasted sentence or command on a terminal too old to bracket it; it is a partial mitigation, not a second lock, and by construction does not cover a paste under that length, one key repeating, or a paste split across reads. Closing those would mean rejecting real fast typing | `app.tsx` · `core/keys.ts` · `test/app.test.tsx` · `test/viewport.test.ts` · `scripts/verify-pty.sh` |
 | I-15 | A chunk of ordinary keys means the keystrokes it spells, applied in order. Ink parses one read as one keypress, so `jjjj`, `jd`, `/cat⏎`, `⇥⏎` and `tjjjj⏎` all arrive as a single string — each must do what pressing those keys does, not be dropped as unrecognised. A run of one key stays one keystroke with a repeat count, so a held toggle does not flicker and `//` is not a search for a slash. Variety is counted in runs, never in characters, or two keys held in turn trip the paste guard and every keystroke in the chunk is dropped. A chunk carrying an escape sequence is never split into its bytes: an arrow is one keypress spelled in several. Only printable text ever reaches the query | `core/keys.ts` · `app.tsx` · `test/viewport.test.ts` · `test/app.test.tsx` |
 
 ## Navigation and state
@@ -83,7 +86,7 @@ found nothing.
 ## Running the checks
 
 ```sh
-npm test              # 404 unit and property tests
+npm test              # 405 unit and property tests
 npm run lint
 npm run typecheck
 npm run build

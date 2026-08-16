@@ -43,6 +43,21 @@ export type Spec = {
   search?: string;
 };
 
+/**
+ * The frames the README ships as `docs/*.png`.
+ *
+ * They live here rather than in gen-png.ts so the rasteriser and the freshness
+ * check cannot disagree about what a screenshot is meant to show.
+ */
+export const SHOTS: Spec[] = [
+  { id: 'hero', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 30, theme: 'dark', level: 3 },
+  { id: 'code', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 26, theme: 'dark', level: 3, scrollTo: 'Code' },
+  { id: 'search', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 22, theme: 'dark', level: 3, search: 'scroll' },
+  { id: 'contents', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 24, theme: 'dark', level: 3, overlay: 'toc' },
+  { id: 'wide', file: 'test/fixtures/wide.md', cols: 92, rows: 18, theme: 'dark', level: 3, hOffset: 40 },
+  { id: 'light', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 26, theme: 'light', level: 3, scrollTo: 'Tables' },
+];
+
 export async function renderFrame(spec: Spec): Promise<{ rows: string[]; theme: Theme }> {
   const src = readFileSync(join(ROOT, spec.file), 'utf8');
   const theme = pickTheme(spec.theme);
@@ -121,4 +136,26 @@ export async function renderFrame(spec: Spec): Promise<{ rows: string[]; theme: 
   );
 
   return { rows, theme };
+}
+
+/**
+ * A digest of every shipped frame, as the app draws it right now.
+ *
+ * The PNG bytes cannot be diffed across machines -- font rasterisation differs
+ * between a laptop and a CI runner, so a byte comparison cries wolf. The frames
+ * underneath them are plain ANSI produced by the app's own compose functions,
+ * and those are deterministic. Hashing them catches the thing that actually
+ * matters: rendering changed and the screenshots were not regenerated.
+ */
+export async function digestFrames(frames: { id: string; rows: string[] }[]): Promise<string> {
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha256');
+  for (const { id, rows } of frames) hash.update(id + '\u0000' + rows.join('\n') + '\u0000');
+  return hash.digest('hex');
+}
+
+export async function framesDigest(): Promise<string> {
+  const frames: { id: string; rows: string[] }[] = [];
+  for (const spec of SHOTS) frames.push({ id: spec.id, rows: (await renderFrame(spec)).rows });
+  return digestFrames(frames);
 }

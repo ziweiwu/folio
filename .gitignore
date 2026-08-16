@@ -3,3 +3,7 @@ dist/
 *.log
 docs/preview.html
 .screenshot-tmp/
+
+.verify-gate-state.json
+.claude/RESUME.md
+__pycache__/

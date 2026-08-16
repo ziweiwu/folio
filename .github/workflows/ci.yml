@@ -25,6 +25,28 @@ jobs:
       - run: npm test
       - run: npm run build
       # The no-terminal paths: exit status, piping, NO_COLOR, redirected stdin.
-      # The pty check is deliberately not here — it needs BSD `script`, so it
-      # stays a local check on macOS.
+      # The pty check needs BSD `script`, so it runs in the macOS job below.
       - run: npm run verify:smoke
+      # docs/*.png are what people see on GitHub and npm, and AGENTS.md makes
+      # regenerating them a rule whenever rendering changes. This compares the
+      # frames underneath them, not the PNG bytes: rasterisation differs between
+      # a laptop and a runner, so a byte diff would cry wolf.
+      - run: npm run verify:screenshots
+
+  # The check AGENTS.md calls the one that matters most, and the only carrier for
+  # I-14 and I-31 -- I-7 is also covered by verify:smoke, but for one exit path
+  # rather than all of them. A test renderer never touches real terminal I/O, so
+  # nothing else here can catch a raw-mode crash on launch or an escape sequence
+  # the app forgot to turn off on the way out. macOS because it needs BSD
+  # `script(1)`; the poller inside the script is what makes it survive a runner
+  # slower than any laptop.
+  pty:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:pty

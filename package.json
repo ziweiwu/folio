@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "verify:pty": "bash scripts/verify-pty.sh",
+    "verify:screenshots": "tsx scripts/check-frames.ts",
     "verify:smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {

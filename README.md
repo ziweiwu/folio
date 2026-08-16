@@ -211,13 +211,19 @@ See [AGENTS.md](AGENTS.md) for the working agreement, and
 [INVARIANTS.md](INVARIANTS.md) for the contract this is built against.
 
 ```sh
-npm test              # 404 unit and property tests
+npm test                    # 405 unit and property tests
 npm run lint && npm run typecheck && npm run build
-npm run verify:smoke  # the no-terminal paths
-npm run verify:pty    # a real pty: drive it, signal it, check what it restored
+npm run verify:smoke        # the no-terminal paths
+npm run verify:screenshots  # do docs/*.png still match what the app draws?
+npm run verify:pty          # a real pty: drive it, signal it, check what it restored
 npm run preview -- test/fixtures/kitchen-sink.md 100   # layout only, no TUI
-npm run screenshots   # regenerate docs/*.png from real frames
+npm run screenshots         # regenerate docs/*.png from real frames
 ```
+
+Everything but `verify:pty` also runs from a `Stop` hook in `.claude/`, so a
+change that leaves the tree failing is refused rather than summarised. CI runs
+the same list, and carries `verify:pty` on a macOS runner because it needs a
+real pty and takes minutes.
 
 ## Licence
 
