@@ -8,7 +8,24 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-CMD=${1:-"npx tsx src/cli.tsx test/fixtures/kitchen-sink.md"}
+# The viewer as it actually ships.
+#
+# Every check here used to start `npx tsx src/cli.tsx`, which transpiles the
+# whole source tree on each of the six viewers this script launches. On a
+# developer's machine that is a few seconds; on a loaded macOS CI runner it was
+# minutes, and the unreadable-link check spent its entire budget waiting for a
+# viewer that had not finished starting — so its keystrokes went to a terminal
+# whose raw mode was not yet on, were discarded by the mode switch, and the
+# check reported a message missing rather than a viewer absent. The diagnostic
+# said so exactly: a frame was drawn, and Tab produced none of the three things
+# it can produce.
+#
+# `bin` points at `dist/` anyway, so this is also the artifact a reader runs —
+# the one thing this script exists to exercise. Built here rather than assumed,
+# because a stale `dist/` would silently check the previous commit.
+npm run build >/dev/null || { echo "pty: build failed" >&2; exit 1; }
+VIEWER="node $PWD/dist/cli.js"
+CMD=${1:-"$VIEWER test/fixtures/kitchen-sink.md"}
 LOG=$(mktemp "${TMPDIR:-/tmp}/umv-pty.XXXXXX")
 
 # Hermetic: the viewer remembers where you were, so a check that inherited the
@@ -81,7 +98,7 @@ refute() {
 # Wait for a marker to show up in the typescript a `script` run is writing.
 #
 # Every drive block below used to open with a fixed sleep and then start typing.
-# That is a race with the cold `npx tsx` compile, and on a machine busy enough
+# That is a race with the viewer starting, and on a machine busy enough
 # to lose it the whole key script was delivered before the viewer had mounted —
 # so the checks failed for reasons that had nothing to do with the app. The
 # signal path already polled the log instead, and it was the one that did not
@@ -96,10 +113,9 @@ await() { # file, pattern, seconds
   return 1
 }
 
-# One throwaway run so the transpile is on disk before anything is timed. tsx
-# caches to disk between processes, so this is paid once instead of by whichever
-# check happens to go first.
-npx tsx src/cli.tsx test/fixtures/kitchen-sink.md >/dev/null 2>&1
+# One throwaway run, so the module graph is warm in the page cache before
+# anything is timed rather than being paid by whichever check goes first.
+$VIEWER test/fixtures/kitchen-sink.md >/dev/null 2>&1
 
 echo "pty: driving '$CMD'"
 # Scroll, half-page, ends, search, next match, contents, help, then quit.
@@ -147,7 +163,7 @@ LOG3=$(mktemp "${TMPDIR:-/tmp}/umv-hl.XXXXXX")
   # moment the marker lands, so this only bounds the pathological case.
   await "$LOG3" '38;2;158;206;106' 120
   printf 'q'; sleep 1; } \
-  | script -q "$LOG3" bash -c "npx tsx src/cli.tsx --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
+  | script -q "$LOG3" bash -c "$VIEWER --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
 # A code-block background band and a Shiki token colour, neither of which the
 # unhighlighted first frame can produce.
 if grep -qaF '48;2;28;31;46' "$LOG3" && grep -qaF '38;2;158;206;106' "$LOG3"; then
@@ -201,7 +217,7 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
   printf '\t'; sleep 0.5; printf '\r'
   await "$LOG4" 'permission denied' 60
   printf '?'; sleep 2; printf 'q'; sleep 2; } \
-  | script -q "$LOG4" bash -c "npx tsx src/cli.tsx $LINKDIR/main.md" >/dev/null 2>&1
+  | script -q "$LOG4" bash -c "$VIEWER $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
   printf '  ok    reports an unreadable link target\n'
 elif [ "$unreadable" -eq 0 ]; then
@@ -247,7 +263,7 @@ echo "ctrl-c is an escape hatch from every mode (I-37)"
 # alternate screen exactly as one that quit does — so without it the log would
 # look identical whether or not Ctrl-C did a thing. Held open for far longer
 # than the wait below, the only thing that can end the app is the byte itself.
-CTRLC_CMD="npx tsx src/cli.tsx --no-resume test/fixtures/kitchen-sink.md"
+CTRLC_CMD="$VIEWER --no-resume test/fixtures/kitchen-sink.md"
 for mode in search:/:▏ contents:t:Contents; do
   label=${mode%%:*}
   rest=${mode#*:}
@@ -274,7 +290,7 @@ for mode in search:/:▏ contents:t:Contents; do
   # else can cause it while stdin is held open above.
   #
   # The budget has to exceed everything the driver waits for before it presses
-  # anything, because this runs alongside it: at 30s against a cold `npx tsx`
+  # anything, because this runs alongside it: at 30s against a cold
   # compile it expired first and killed the run before the mode was ever
   # opened, which reported as "the search never opened" on a busy machine and
   # passed on an idle one. `await` returns the instant its marker lands, so a
@@ -326,7 +342,7 @@ driver=$!
 # Wait for the viewer to actually exist rather than guessing how long it needs.
 # `script` buffers its typescript, so the log cannot be polled for readiness —
 # but the process table can, and a fixed sleep loses the race the moment the
-# machine is busy enough for a cold `npx tsx` compile to run long.
+# machine is busy enough for a cold start to run long.
 # Ready means the viewer has actually entered the alternate screen, which is
 # the very thing this check is about to test the restoration of. Polling the
 # log for it beats a fixed wait, and beats looking for the process: `script`
