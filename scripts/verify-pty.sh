@@ -35,6 +35,19 @@ trap 'reap $$; rm -rf "$LOG" "$STATE"' EXIT INT TERM
 ESC=$'\033'
 fail=0
 
+# A real terminal, which is what every check below is about.
+#
+# `detectColorLevel` returns 0 when TERM is empty or `dumb`, and a GitHub
+# runner sets neither TERM nor COLORTERM — so on CI the viewer correctly
+# decided there was no colour, and with no colour it does not enable mouse
+# reporting at all. Three checks then asserted mouse sequences that the app was
+# right not to send, and the highlighting check looked for truecolor tokens
+# that cannot exist below level 3. They failed on every CI run since the job
+# was added, while passing on any developer's machine, because the difference
+# was the environment and not the code. Forcing the level is what makes the
+# checks exercise the thing they name.
+export FORCE_COLOR=3
+
 # Only this run's own processes are ever signalled. `script` puts the app in a
 # new pty session, so its process-group id is no use — but the parent/child
 # chain survives, and walking it finds exactly our own app and nothing else.
@@ -158,8 +171,15 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # outcomes apart: the crash prints the same words in its stack trace, and the
 # screen is restored on the way out either way. What separates them is whether
 # anything is still there to draw the next frame.
-{ await "$LOG4" "${ESC}[?1049h" 60; printf '\t'; sleep 0.5; printf '\r'
-  await "$LOG4" 'permission denied' 20
+{ await "$LOG4" "${ESC}[?1049h" 60
+  # Mounted is not drawn, and Tab picks from links the layout has to have
+  # produced first. Pressing it half a second after the alternate screen
+  # appeared is the fixed-sleep race this script's own header warns about: on a
+  # runner slow enough to lose it, Tab found no links, Enter said so, and the
+  # check reported that an unreadable link was not reported.
+  await "$LOG4" 'Go to' 60
+  printf '\t'; sleep 0.5; printf '\r'
+  await "$LOG4" 'permission denied' 30
   printf '?'; sleep 1; printf 'q'; sleep 1; } \
   | script -q "$LOG4" bash -c "npx tsx src/cli.tsx $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
