@@ -83,9 +83,6 @@ check() { # name pattern
     fail=1
   fi
 }
-# Whether a marker ever reached the typescript, for a failure to explain itself.
-seen() { grep -qaF "$2" "$1" && printf 'yes' || printf 'no'; }
-
 refute() {
   if grep -qaF "$2" "$LOG"; then
     printf '  FAIL  %s\n' "$1"
@@ -185,90 +182,11 @@ else
 fi
 rm -f "$LOG3"
 
-echo "a link it cannot read (I-31)"
-# `stat` succeeding does not mean a file can be read. Following a link to a
-# mode-000 file used to throw out of the host's `open` callback, surface as an
-# unhandled rejection, and take the whole viewer down with a blank screen.
-LINKDIR=$(mktemp -d "${TMPDIR:-/tmp}/umv-link.XXXXXX")
-printf '# Main\n\nGo to [secret](./secret.md) now.\n' > "$LINKDIR/main.md"
-printf '# Secret\n' > "$LINKDIR/secret.md"
-chmod 000 "$LINKDIR/secret.md"
-# The whole check rests on this file being unreadable, and `chmod 000` does not
-# achieve that for every user — root reads it regardless. Asserted rather than
-# assumed, so an environment that cannot produce an unreadable file says so
-# instead of being reported as the viewer failing to notice one.
-unreadable=1
-if cat "$LINKDIR/secret.md" >/dev/null 2>&1; then unreadable=0; fi
-LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
-# Tab picks the link, Enter follows it. Then `?` opens the help overlay — which
-# only draws if the app is still running — and `q` quits.
-#
-# Neither "permission denied" nor the alternate-screen reset can tell the two
-# outcomes apart: the crash prints the same words in its stack trace, and the
-# screen is restored on the way out either way. What separates them is whether
-# anything is still there to draw the next frame.
-#
-# Driven on a schedule rather than by watching the log, because on the CI
-# runner the typescript cannot be read while the run is in progress — not even
-# with -F. Measured, not assumed: the alternate screen was found in zero
-# seconds and the document's own heading was still missing 84 seconds later, in
-# a file that ends up containing the whole session. Every `await` there is
-# therefore a delay wearing a marker's clothes.
-#
-# So the keys are simply sent again. Tab wraps among the one link this document
-# has, so it re-selects it; Enter re-follows and the read fails the same way.
-# Whichever attempt first lands on a viewer that is ready produces the message,
-# and the loop stops as soon as the log shows it on a machine where the log can
-# be seen at all. That is what makes this safe against a slow start without
-# resting on a fixed sleep being long enough — the objection the header raises,
-# and the reason this was written to poll in the first place.
-{ await "$LOG4" "${ESC}[?1049h" 60
-  for _ in 1 2 3 4 5 6 7 8; do
-    printf '\t'; sleep 0.4; printf '\r'
-    grep -qaF 'permission denied' "$LOG4" 2>/dev/null && break
-    sleep 3
-  done
-  printf '?'; sleep 2; printf 'q'; sleep 2; } \
-  | script -qF "$LOG4" bash -c "$VIEWER $LINKDIR/main.md" >/dev/null 2>&1
-if grep -qaF 'permission denied' "$LOG4"; then
-  printf '  ok    reports an unreadable link target\n'
-elif [ "$unreadable" -eq 0 ]; then
-  # Not a failure of the app: this user can read a mode-000 file, so the
-  # condition the check needs never existed. Said out loud, because a check
-  # that quietly skips itself is indistinguishable from one that passed.
-  printf '  SKIP  reports an unreadable link target — this user can read mode 000\n'
-else
-  printf '  FAIL  reports an unreadable link target\n'
-  # Which of the things that had to happen did. Dumping the tail says almost
-  # nothing once the escapes are stripped; what separates the failure modes is
-  # whether the viewer ever drew at all, whether it found a link to pick, and
-  # what it said instead of the message this check wants.
-  printf '        drew a frame: %s | reached the target: %s\n' \
-    "$(seen "$LOG4" 'q quit')" "$(seen "$LOG4" 'Secret')"
-  printf '        said "no links": %s | "press tab": %s | "not found": %s\n' \
-    "$(seen "$LOG4" 'no links in this document')" "$(seen "$LOG4" 'press tab')" "$(seen "$LOG4" 'not found')"
-  printf '        showed the document: %s\n' "$(seen "$LOG4" 'Main')"
-  # The screen as a reader would have seen it: escapes removed rather than
-  # merely stripped of their control byte, which leaves `[49m` litter behind
-  # and reads as nothing at all.
-  printf '        last frame: %s\n' \
-    "$(LC_ALL=C sed -e $'s/\033\[[0-9;?]*[a-zA-Z]//g' -e $'s/\033\][^\007]*\007//g' -e 's/[^[:print:]]//g' "$LOG4" | tail -c 400 | tr -s ' ')"
-  fail=1
-fi
-if grep -qaF 'at readFileSync' "$LOG4"; then
-  printf '  FAIL  no stack trace escaped to the terminal\n'
-  fail=1
-else
-  printf '  ok    no stack trace escaped to the terminal\n'
-fi
-if grep -qaF 'reload from disk' "$LOG4"; then
-  printf '  ok    still drawing frames afterwards\n'
-else
-  printf '  FAIL  still drawing frames afterwards\n'
-  fail=1
-fi
-chmod 644 "$LINKDIR/secret.md"
-rm -rf "$LOG4" "$LINKDIR"
+# Driven by its own pty rather than through script(1), because it is the one
+# check here that must react to what is on screen rather than merely send keys
+# at it — and on the CI runner script's typescript cannot be read while the run
+# is in progress. See scripts/pty-link.py for the measurements behind that.
+python3 scripts/pty-link.py || fail=1
 
 echo "ctrl-c is an escape hatch from every mode (I-37)"
 # In raw mode Ctrl-C is a *byte*, not a signal: the kernel does not turn it

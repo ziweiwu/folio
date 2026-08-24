@@ -96,6 +96,13 @@ fraction of the time, which stopped mattering as a nicety the moment a loaded
 CI runner spent a whole check's budget waiting for a viewer that had not
 finished transpiling, and reported the app as silent.
 
+Most of it drives the viewer through `script(1)` and reads the typescript it
+writes. One check — following a link the filesystem refuses, `scripts/pty-link.py`
+— opens its own pty instead, because it has to *react* to what is on screen
+rather than only send keys at it, and on the macOS CI runner a typescript
+cannot be read while the run is in progress. Both are hermetic the same way,
+pointing `XDG_STATE_HOME` at a temporary directory (I-24).
+
 ## The invariant contract
 
 `INVARIANTS.md` numbers every property this app is built against, and each has a
