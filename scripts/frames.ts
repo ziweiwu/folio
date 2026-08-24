@@ -14,7 +14,7 @@ import { findMatches } from '../src/core/search.js';
 import { layoutDoc } from '../src/md/layout.js';
 import { isMarkdownPath, layoutText } from '../src/md/text.js';
 import { collectLanguages, createHighlighter } from '../src/md/highlight.js';
-import { composeFrame, sectionAt, statusBar } from '../src/ui/chrome.js';
+import { composeFrame, maxHOffset, sectionAt, statusBar } from '../src/ui/chrome.js';
 import { centre, overlayRows } from '../src/ui/overlay.js';
 import { helpPane, searchBar, tocPane } from '../src/ui/panes.js';
 import { pickTheme } from '../src/ui/theme.js';
@@ -108,9 +108,19 @@ export async function renderFrame(spec: Spec): Promise<{ rows: string[]; theme: 
         }
       : undefined;
 
+  /* Clamped exactly as the viewer clamps it (I-36), so a shot can only show a
+     sideways offset the reader could actually pan to. Without this a `Spec`
+     asking for more than the rows on screen can reach would produce a frame
+     of blanks that the app itself cannot draw — and the README's claim that a
+     screenshot cannot drift from the viewer would quietly stop being true. */
+  const hOffset = Math.min(
+    spec.hOffset ?? 0,
+    maxHOffset(doc, { offset, height, total: doc.lines.length }, spec.cols),
+  );
+
   let rows = composeFrame(
     doc,
-    { offset, height, total: doc.lines.length, hOffset: spec.hOffset ?? 0 },
+    { offset, height, total: doc.lines.length, hOffset },
     spec.cols, theme, spec.level, decorate,
   );
 

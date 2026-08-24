@@ -214,6 +214,23 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
   /* Bounded by the widest row currently on screen, not by the whole document:
      how far right you can go depends on what you are looking at. */
   const maxH = maxHOffset(doc, { offset, height, total: doc.lines.length }, columns);
+  /**
+   * The offset actually in effect, as opposed to the one remembered (I-36).
+   *
+   * `maxH` is a property of the rows on screen, so scrolling changes it while
+   * `hOffset` stays where the reader last panned to. Panning right over a
+   * 300-cell code block and then scrolling down to a 95-cell one left the
+   * viewport slicing every row from a column past its end: the block rendered
+   * as blank rows with a `‹` and nothing else, and `›` was correctly absent
+   * because nothing continued — so the reader was shown an empty frame with no
+   * indication that anything was there or which key would bring it back.
+   *
+   * Clamped here rather than written back into the state, so the pan survives
+   * scrolling past prose and is restored on the next wide block. Costs nothing
+   * per row: `maxH` is already computed once per frame from the visible rows
+   * alone, which is what keeps this off the scroll path (I-4).
+   */
+  const hView = Math.min(hOffset, maxH);
   /** Roughly a word, so `l` feels like reading rather than nudging. */
   const H_STEP = 8;
 
@@ -294,6 +311,15 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
       const wrapped = ((index % list.length) + list.length) % list.length;
       putMatchIndex(wrapped);
       revealLine(list[wrapped]!.line);
+      /* Where you are, out of how many. The count is shown while the query is
+         being typed and then vanished the moment it was committed, which is
+         exactly when it starts being useful: `n` moved the viewport and said
+         nothing, so there was no way to tell a document with three matches
+         from one with thirty, or to notice the wrap from the last back to the
+         first. Reported through the ordinary transient-status channel rather
+         than in the bar's own state, so it costs no chrome and says it at the
+         moment the reader asked. */
+      setStatus(`match ${wrapped + 1} of ${list.length}`);
     },
     [revealLine, putMatchIndex],
   );
@@ -475,8 +501,12 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
         case 'b': scrollBy(-(height - 2) * repeat); return;
         case 'g': scrollTo(0); setHOffset(0); return;
         case 'G': scrollTo(doc.lines.length); setHOffset(0); return;
-        case 'h': setHOffset((x) => Math.max(0, x - H_STEP * repeat)); return;
-        case 'l': setHOffset((x) => Math.min(maxH, x + H_STEP * repeat)); return;
+        /* Stepped from the offset in effect, not the one remembered, so a key
+           press always moves relative to what the reader can see. Panning back
+           from a remembered 233 on rows that only reach 28 otherwise took 26
+           presses of `h` before anything on screen moved. */
+        case 'h': setHOffset((x) => Math.max(0, Math.min(x, maxH) - H_STEP * repeat)); return;
+        case 'l': setHOffset((x) => Math.min(maxH, Math.min(x, maxH) + H_STEP * repeat)); return;
         case '0': setHOffset(0); return;
         default:
       }
@@ -492,6 +522,18 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
    * read — `cat⏎` sets neither `return` nor anything else useful.
    */
   const press = useCallback((input: string, repeat: number, key: Keys) => {
+    /* Ctrl-C outranks every mode (I-37). Ink is told not to act on it itself
+       (`exitOnCtrlC: false`) so that a `c` typed into the search box is never
+       mistaken for it — which left the app deciding, and the decision was only
+       ever made in the doc branch below. `/` or `t` and then Ctrl-C therefore
+       did nothing at all: the one key a reader falls back on when they do not
+       know an app was dead in exactly the two modes they could get stuck in.
+       Handled before the branches, so there is no mode in which it is not. */
+    if (key.ctrl && input === 'c') {
+      quit();
+      return;
+    }
+
     if (modeRef.current === 'search') {
       if (key.escape) {
         enterMode('doc');
@@ -585,7 +627,8 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     }
 
     switch (true) {
-      case input === 'q' || key.escape || (key.ctrl && input === 'c'):
+      // Ctrl-C is handled above, for every mode rather than only this one.
+      case input === 'q' || key.escape:
         quit();
         return;
       // Motion goes through one place, so a burst and a single press cannot
@@ -772,7 +815,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
 
   let frame = composeFrame(
     doc,
-    { offset, height, total: doc.lines.length, hOffset },
+    { offset, height, total: doc.lines.length, hOffset: hView },
     columns,
     theme,
     level,
@@ -793,7 +836,7 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
             message: status,
             name: title,
             section: sectionAt(doc, offset),
-            state: hOffset > 0 ? `↔ ${hOffset}` : null,
+            state: hView > 0 ? `↔ ${hView}` : null,
             offset,
             height,
             total: doc.lines.length,

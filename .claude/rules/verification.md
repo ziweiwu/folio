@@ -42,5 +42,23 @@ the thing it named was broken.
   lands, so a generous budget is free on a fast machine and only bounds the
   pathological case.
 
+- **Under `pipefail`, never pipe a command that exits non-zero by design into
+  `grep`.** The pipeline reports the *command's* status, not grep's, so
+  `folio missing.md | grep -q 'no such file'` fails even when the message is
+  exactly right — and it fails as "the message was wrong", which sends you
+  looking in the wrong place. Capture first, match after:
+  `out=$(cmd 2>&1 >/dev/null); case $out in *"$want"*) ok;; esac`.
+- **A concurrent wait must outlast everything the driver waits for.** A check
+  whose driver block polls for the mount and then for content, while the
+  assertion polls for the result on a shorter budget, kills the run before the
+  keystroke under test is ever sent. The failure reads as "the mode never
+  opened" and only on a busy machine. Every budget must exceed the sum of the
+  ones that must elapse before its marker can appear.
+- **An earlier check leaves state the next one inherits.** The viewer saves a
+  reading position on `q`, so a later check that waits for the document's
+  *first line* waits forever — the run resumed halfway down. Wait for something
+  the frame always draws, such as the status bar's own legend, and pass
+  `--no-resume` when the keystrokes depend on where the reader is.
+
 When you add behaviour worth relying on, add a numbered invariant to
 `INVARIANTS.md` and a test carrying its number.

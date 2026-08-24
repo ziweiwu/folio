@@ -34,6 +34,17 @@ trap 'reap $$; rm -rf "$LOG" "$STATE"' EXIT INT TERM
 
 ESC=$'\033'
 fail=0
+
+# Only this run's own processes are ever signalled. `script` puts the app in a
+# new pty session, so its process-group id is no use — but the parent/child
+# chain survives, and walking it finds exactly our own app and nothing else.
+descendants() {
+  local kid
+  for kid in $(pgrep -P "$1" 2>/dev/null); do
+    printf '%s ' "$kid"
+    descendants "$kid"
+  done
+}
 check() { # name pattern
   if grep -qaF "$2" "$LOG"; then
     printf '  ok    %s\n' "$1"
@@ -172,6 +183,69 @@ fi
 chmod 644 "$LINKDIR/secret.md"
 rm -rf "$LOG4" "$LINKDIR"
 
+echo "ctrl-c is an escape hatch from every mode (I-37)"
+# In raw mode Ctrl-C is a *byte*, not a signal: the kernel does not turn it
+# into SIGINT, so the app itself has to act on it. It only ever did so in the
+# doc branch, which left `/` and `t` — a prompt and a full-screen pane, the two
+# places a reader can actually feel stuck — with no way out but `q` or `esc`.
+#
+# The `sleep` after the keystroke is what makes this check mean anything. A
+# driver block that ends closes stdin, and a viewer exiting on EOF leaves the
+# alternate screen exactly as one that quit does — so without it the log would
+# look identical whether or not Ctrl-C did a thing. Held open for far longer
+# than the wait below, the only thing that can end the app is the byte itself.
+CTRLC_CMD="npx tsx src/cli.tsx --no-resume test/fixtures/kitchen-sink.md"
+for mode in search:/:▏ contents:t:Contents; do
+  label=${mode%%:*}
+  rest=${mode#*:}
+  opener=${rest%%:*}
+  marker=${rest#*:}
+  LOG5=$(mktemp "${TMPDIR:-/tmp}/umv-ctrlc.XXXXXX")
+
+  ( { await "$LOG5" "${ESC}[?1049h" 60
+      # The status bar's own legend, not any text from the document: the run
+      # above quits with `q` and so leaves a saved position behind, and a
+      # viewer that resumes mid-document never draws its first line. Waiting
+      # for something only the frame can produce makes this check independent
+      # of where the reader was last time — and `--no-resume` below keeps the
+      # keystrokes landing on a known document position too.
+      await "$LOG5" "q quit" 60
+      printf '%s' "$opener"
+      # The mode's own marker, so the byte lands where this check says it does.
+      await "$LOG5" "$marker" 30
+      printf '\003'
+      sleep 600; } | script -q "$LOG5" bash -c "$CTRLC_CMD" >/dev/null 2>&1 ) &
+  driver=$!
+
+  # Leaving the alternate screen is the app tearing itself down, and nothing
+  # else can cause it while stdin is held open above.
+  #
+  # The budget has to exceed everything the driver waits for before it presses
+  # anything, because this runs alongside it: at 30s against a cold `npx tsx`
+  # compile it expired first and killed the run before the mode was ever
+  # opened, which reported as "the search never opened" on a busy machine and
+  # passed on an idle one. `await` returns the instant its marker lands, so a
+  # generous budget only bounds the pathological case.
+  left=0
+  await "$LOG5" "${ESC}[?1049l" 180 && left=1
+
+  # shellcheck disable=SC2046
+  kill -9 $(descendants "$driver") 2>/dev/null
+  kill -9 "$driver" 2>/dev/null
+  wait "$driver" 2>/dev/null
+
+  if ! grep -qaF "$marker" "$LOG5"; then
+    printf '  FAIL  the %s never opened, so ctrl-c from it proves nothing\n' "$label"
+    fail=1
+  elif [ "$left" -eq 1 ]; then
+    printf '  ok    ctrl-c quits from the %s, and restores the terminal\n' "$label"
+  else
+    printf '  FAIL  ctrl-c quits from the %s, and restores the terminal\n' "$label"
+    fail=1
+  fi
+  rm -f "$LOG5"
+done
+
 echo "signal path"
 LOG2=$(mktemp "${TMPDIR:-/tmp}/umv-sig.XXXXXX")
 # Job control, so the pipeline below becomes a process group of its own and its
@@ -186,14 +260,6 @@ LOG2=$(mktemp "${TMPDIR:-/tmp}/umv-sig.XXXXXX")
 # Only this run's own processes are signalled. `script` puts the app in a new
 # pty session, so the group id is no use — but the parent/child chain survives,
 # and walking it finds exactly our own app and nothing else.
-descendants() {
-  local kid
-  for kid in $(pgrep -P "$1" 2>/dev/null); do
-    printf '%s ' "$kid"
-    descendants "$kid"
-  done
-}
-
 # The sleep is only here to hold stdin open so the viewer stays up until it is
 # signalled. It must outlast every await below it -- with `sleep 30` against a
 # 60s mount budget and a 30s content budget, a slow machine closed stdin first,

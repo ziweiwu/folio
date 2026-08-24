@@ -69,6 +69,9 @@ export type StatusInfo = {
   hints: readonly string[];
 };
 
+/** The share of the bar the filename may claim before it is truncated. */
+const NAME_SHARE = 3;
+
 /** Between legend items. Wide enough that the pairs do not read as one run. */
 const HINT_SEP = '   ';
 
@@ -94,11 +97,28 @@ export function statusBar(info: StatusInfo, width: number, theme: Theme, level: 
      hints have not yet vacated would make the two fight over the same cells. */
   const hintsFull = info.hints.join(HINT_SEP);
 
-  let left =
-    paint(' ', status, level) +
-    paint(truncate(info.name, Math.max(8, Math.floor(width / 3))), statusAccent, level) +
-    sep +
-    paint(pct, status, level);
+  /* What the legend needs to keep its last item, plus the two cells of
+     daylight before it (I-26). Everything to the left is fitted around this
+     rather than the other way round: the name and the percentage used to be
+     built at their preferred size first and offered the remainder, so at 25
+     columns and below there was never a remainder — `q quit` needs 8 cells and
+     only 6 were left. The bar then showed no legend at all, on an ordinary
+     tmux split, which is the one outcome the invariant exists to forbid. */
+  const lastHint = info.hints.at(-1) ?? '';
+  const reserve = lastHint === '' ? 0 : displayWidth(lastHint) + 2;
+
+  const lead = 1 + ansiWidth(sep) + displayWidth(pct);
+  /* The name still gets a third of the bar when there is a third to give. The
+     floor is what it may be squeezed to so the legend survives, not a width it
+     is entitled to. */
+  const nameRoom = Math.max(1, Math.min(Math.floor(width / NAME_SHARE), width - lead - reserve));
+  const named = paint(' ', status, level) + paint(truncate(info.name, nameRoom), statusAccent, level);
+
+  let left = named + sep + paint(pct, status, level);
+  /* Narrower still, and the percentage goes too. How far through the document
+     you are is worth less than how to leave it — the legend is the last thing
+     to give way, after everything else already has. */
+  if (reserve > 0 && width - ansiWidth(left) - 1 < reserve) left = named;
 
   if (info.section) {
     const room = width - ansiWidth(left) - ansiWidth(sep) - ansiWidth(hintsFull) - 4;
