@@ -1049,3 +1049,52 @@ describe('I-34 Enter is Enter however the terminal spells it', () => {
     app.unmount();
   });
 });
+
+describe('I-31 a host callback that rejects becomes a message, not a crash', () => {
+  /* `stat` succeeding does not mean a file can be read, so `open` may reject
+     after the viewer has committed to the navigation — and a rejection React
+     cannot render takes the whole viewer down with a blank screen. Guarded in
+     a real pty as well (scripts/pty-link.py), but that needs a terminal and a
+     file the filesystem will refuse; this needs neither, so it runs everywhere
+     and on every commit. */
+  const LINKED_DOC = '# Main\n\nGo to [secret](./secret.md) now.\n';
+
+  it('I-31 reports a rejected open and keeps drawing', async () => {
+    const app = mount({ initial: { text: LINKED_DOC }, open: denied });
+    await settle();
+    app.stdin.write('\t');
+    await settle();
+    app.stdin.write('\r');
+    await settle();
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('permission denied');
+    // Still a viewer: the help pane only draws if something is alive to draw it.
+    app.stdin.write('?');
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('reload from disk');
+    app.unmount();
+  }, 30_000);
+
+  it('I-31 reports a target that resolves to nothing', async () => {
+    const app = mount({ initial: { text: LINKED_DOC }, open: async () => null });
+    await settle();
+    app.stdin.write('\t');
+    await settle();
+    app.stdin.write('\r');
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('not found');
+    app.unmount();
+  }, 30_000);
+
+  it('I-31 says so rather than throwing when there is nowhere to open from', async () => {
+    // Reading stdin: "relative to the current document" has no meaning.
+    const app = mount({ initial: { text: LINKED_DOC } });
+    await settle();
+    app.stdin.write('\t');
+    await settle();
+    app.stdin.write('\r');
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('cannot follow a file link');
+    app.unmount();
+  }, 30_000);
+});
