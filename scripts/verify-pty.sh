@@ -221,11 +221,14 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
   # appeared is the fixed-sleep race this script's own header warns about: on a
   # runner slow enough to lose it, Tab found no links, Enter said so, and the
   # check reported that an unreadable link was not reported.
-  # The status bar's legend, not the document's own words: it is drawn in the
-  # same frame as the document, so it says just as surely that the layout has
-  # run and there are links to pick — and unlike the prose it cannot be moved
-  # by wrapping, a theme, or where the reader happens to be.
-  await "$LOG4" 'q quit' 150; echo "painted:$((SECONDS-t0))s" >> "$LOG4.timing"; t0=$SECONDS
+  # The document's own heading, which the diagnostic below has repeatedly
+  # confirmed reaches the typescript. The status bar's legend was tried first,
+  # on the reasoning that it is in every frame — and on the CI runner it never
+  # arrived within any budget, while `Main` did. A row of styled text is
+  # hundreds of bytes once colour is on, and a marker only has to straddle one
+  # write boundary to be invisible to a fixed-string search; a short word near
+  # the start of a frame is the safer thing to wait for.
+  await "$LOG4" 'Main' 60; echo "painted:$((SECONDS-t0))s" >> "$LOG4.timing"; t0=$SECONDS
   printf '\t'; sleep 0.5; printf '\r'
   await "$LOG4" 'permission denied' 60; echo "message:$((SECONDS-t0))s" >> "$LOG4.timing"
   printf '?'; sleep 2; printf 'q'; sleep 2; } \
@@ -291,13 +294,13 @@ for mode in search:/:▏ contents:t:Contents; do
   LOG5=$(mktemp "${TMPDIR:-/tmp}/umv-ctrlc.XXXXXX")
 
   ( { await "$LOG5" "${ESC}[?1049h" 60
-      # The status bar's own legend, not any text from the document: the run
-      # above quits with `q` and so leaves a saved position behind, and a
-      # viewer that resumes mid-document never draws its first line. Waiting
-      # for something only the frame can produce makes this check independent
-      # of where the reader was last time — and `--no-resume` below keeps the
-      # keystrokes landing on a known document position too.
-      await "$LOG5" "q quit" 60
+      # `--no-resume` below puts the viewer at the top of the document however
+      # the earlier runs left it, so its first heading is a marker that is
+      # always on screen. The status bar's legend was tried instead, and never
+      # reached the typescript on the CI runner within any budget — a styled
+      # row runs to hundreds of bytes, and a marker that straddles a write
+      # boundary cannot be found by a fixed-string search.
+      await "$LOG5" 'A terminal markdown viewer' 60
       printf '%s' "$opener"
       # The mode's own marker, so the byte lands where this check says it does.
       await "$LOG5" "$marker" 30
