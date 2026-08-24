@@ -90,6 +90,12 @@ terminal I/O, so it cannot catch a raw-mode crash on launch or an escape
 sequence the app forgot to turn off on the way out — and those are the failures
 a user actually notices.
 
+It builds first and drives `dist/cli.js`, not `src/` through `tsx`. That is the
+artifact `bin` points at, so it is the one worth driving — and it starts in a
+fraction of the time, which stopped mattering as a nicety the moment a loaded
+CI runner spent a whole check's budget waiting for a viewer that had not
+finished transpiling, and reported the app as silent.
+
 ## The invariant contract
 
 `INVARIANTS.md` numbers every property this app is built against, and each has a
