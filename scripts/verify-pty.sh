@@ -97,6 +97,17 @@ refute() {
 
 # Wait for a marker to show up in the typescript a `script` run is writing.
 #
+# Every `script` here passes -F, and the whole polling design below depends on
+# it: without it the typescript is block-buffered, so a marker sits in memory
+# until enough output accumulates to flush. An idle viewer produces no further
+# output, so the flush never comes, and every `await` runs to its full budget
+# while the thing it is waiting for has already happened. Most checks then pass
+# anyway — the final greps read the complete file once the run has ended — so
+# the breakage showed up only as checks taking two and a half minutes each, and
+# as one check whose keystrokes went out minutes after the moment they were
+# meant for. -F is the documented flag for watching a live session, which is
+# exactly what this script does.
+#
 # Every drive block below used to open with a fixed sleep and then start typing.
 # That is a race with the viewer starting, and on a machine busy enough
 # to lose it the whole key script was delivered before the viewer had mounted —
@@ -133,7 +144,7 @@ echo "pty: driving '$CMD'"
   printf '?'; sleep 0.3
   printf '\033'; sleep 0.3
   printf 'q'; sleep 0.5
-} | script -q "$LOG" bash -c "$CMD" >/dev/null 2>&1
+} | script -qF "$LOG" bash -c "$CMD" >/dev/null 2>&1
 
 echo "terminal state"
 check   "entered the alternate screen"        "${ESC}[?1049h"
@@ -163,7 +174,7 @@ LOG3=$(mktemp "${TMPDIR:-/tmp}/umv-hl.XXXXXX")
   # moment the marker lands, so this only bounds the pathological case.
   await "$LOG3" '38;2;158;206;106' 120
   printf 'q'; sleep 1; } \
-  | script -q "$LOG3" bash -c "$VIEWER --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
+  | script -qF "$LOG3" bash -c "$VIEWER --theme dark test/fixtures/kitchen-sink.md" >/dev/null 2>&1
 # A code-block background band and a Shiki token colour, neither of which the
 # unhighlighted first frame can produce.
 if grep -qaF '48;2;28;31;46' "$LOG3" && grep -qaF '38;2;158;206;106' "$LOG3"; then
@@ -218,7 +229,7 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
   printf '\t'; sleep 0.5; printf '\r'
   await "$LOG4" 'permission denied' 60; echo "message:$((SECONDS-t0))s" >> "$LOG4.timing"
   printf '?'; sleep 2; printf 'q'; sleep 2; } \
-  | script -q "$LOG4" bash -c "$VIEWER $LINKDIR/main.md" >/dev/null 2>&1
+  | script -qF "$LOG4" bash -c "$VIEWER $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
   printf '  ok    reports an unreadable link target\n'
 elif [ "$unreadable" -eq 0 ]; then
@@ -291,7 +302,7 @@ for mode in search:/:▏ contents:t:Contents; do
       # The mode's own marker, so the byte lands where this check says it does.
       await "$LOG5" "$marker" 30
       printf '\003'
-      sleep 600; } | script -q "$LOG5" bash -c "$CTRLC_CMD" >/dev/null 2>&1 ) &
+      sleep 600; } | script -qF "$LOG5" bash -c "$CTRLC_CMD" >/dev/null 2>&1 ) &
   driver=$!
 
   # Leaving the alternate screen is the app tearing itself down, and nothing
@@ -344,7 +355,7 @@ LOG2=$(mktemp "${TMPDIR:-/tmp}/umv-sig.XXXXXX")
 # failed silently as a *pass*, because a clean EOF exit restores the terminal
 # too, so the greps still found their bytes. Nothing hangs for this long: the
 # whole pipeline is killed explicitly at the end of the check.
-( sleep 600 | script -q "$LOG2" bash -c "$CMD" >/dev/null 2>&1 ) &
+( sleep 600 | script -qF "$LOG2" bash -c "$CMD" >/dev/null 2>&1 ) &
 driver=$!
 
 # Wait for the viewer to actually exist rather than guessing how long it needs.
