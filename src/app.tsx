@@ -778,7 +778,16 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
        to the key after it. See I-15, I-34. */
     const segments = splitBurst(raw, key);
     if (segments.length === 1 && segments[0]!.key === raw) {
-      press(raw, segments[0]!.repeat, key);
+      /* Ink calls `\r` a return and a lone `\n` an *enter*, and only the first
+         sets `key.return`; the second arrives with every flag false and its
+         input blanked, so it matched nothing here and did nothing at all. A pty
+         whose line discipline translates CR to NL — which is what a terminal
+         does unless raw mode has turned it off, and what the macOS CI runner
+         was doing — therefore left Enter dead: links could not be followed and
+         a typed query could not be committed, silently, with the viewer
+         otherwise working perfectly. `keysFor` below already treats the two the
+         same inside a chunk; this is the single-key path agreeing with it. */
+      press(raw, segments[0]!.repeat, raw === '\n' ? { ...key, return: true } : key);
       return;
     }
     for (const segment of segments) press(segment.key, segment.repeat, keysFor(segment.key));
