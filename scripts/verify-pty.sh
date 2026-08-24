@@ -208,29 +208,26 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # screen is restored on the way out either way. What separates them is whether
 # anything is still there to draw the next frame.
 #
-# The budgets are generous for the reason the header gives: this is the fourth
-# viewer the script starts, on a runner that may be loaded, and `await` returns
-# the instant its marker lands so a large budget costs nothing when things are
-# fast. At 60s for the mount the keys went out before the app existed — Tab
-# reached nothing, and the check reported a missing message rather than a slow
-# machine.
-{ t0=$SECONDS
-  await "$LOG4" "${ESC}[?1049h" 150; echo "mount:$((SECONDS-t0))s" > "$LOG4.timing"; t0=$SECONDS
-  # Mounted is not drawn, and Tab picks from links the layout has to have
-  # produced first. Pressing it half a second after the alternate screen
-  # appeared is the fixed-sleep race this script's own header warns about: on a
-  # runner slow enough to lose it, Tab found no links, Enter said so, and the
-  # check reported that an unreadable link was not reported.
-  # The document's own heading, which the diagnostic below has repeatedly
-  # confirmed reaches the typescript. The status bar's legend was tried first,
-  # on the reasoning that it is in every frame — and on the CI runner it never
-  # arrived within any budget, while `Main` did. A row of styled text is
-  # hundreds of bytes once colour is on, and a marker only has to straddle one
-  # write boundary to be invisible to a fixed-string search; a short word near
-  # the start of a frame is the safer thing to wait for.
-  await "$LOG4" 'Main' 60; echo "painted:$((SECONDS-t0))s" >> "$LOG4.timing"; t0=$SECONDS
-  printf '\t'; sleep 0.5; printf '\r'
-  await "$LOG4" 'permission denied' 60; echo "message:$((SECONDS-t0))s" >> "$LOG4.timing"
+# Driven on a schedule rather than by watching the log, because on the CI
+# runner the typescript cannot be read while the run is in progress — not even
+# with -F. Measured, not assumed: the alternate screen was found in zero
+# seconds and the document's own heading was still missing 84 seconds later, in
+# a file that ends up containing the whole session. Every `await` there is
+# therefore a delay wearing a marker's clothes.
+#
+# So the keys are simply sent again. Tab wraps among the one link this document
+# has, so it re-selects it; Enter re-follows and the read fails the same way.
+# Whichever attempt first lands on a viewer that is ready produces the message,
+# and the loop stops as soon as the log shows it on a machine where the log can
+# be seen at all. That is what makes this safe against a slow start without
+# resting on a fixed sleep being long enough — the objection the header raises,
+# and the reason this was written to poll in the first place.
+{ await "$LOG4" "${ESC}[?1049h" 60
+  for _ in 1 2 3 4 5 6 7 8; do
+    printf '\t'; sleep 0.4; printf '\r'
+    grep -qaF 'permission denied' "$LOG4" 2>/dev/null && break
+    sleep 3
+  done
   printf '?'; sleep 2; printf 'q'; sleep 2; } \
   | script -qF "$LOG4" bash -c "$VIEWER $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
@@ -250,8 +247,7 @@ else
     "$(seen "$LOG4" 'q quit')" "$(seen "$LOG4" 'Secret')"
   printf '        said "no links": %s | "press tab": %s | "not found": %s\n' \
     "$(seen "$LOG4" 'no links in this document')" "$(seen "$LOG4" 'press tab')" "$(seen "$LOG4" 'not found')"
-  printf '        showed the document: %s | waits: %s\n' \
-    "$(seen "$LOG4" 'Main')" "$(tr '\n' ' ' < "$LOG4.timing" 2>/dev/null)"
+  printf '        showed the document: %s\n' "$(seen "$LOG4" 'Main')"
   # The screen as a reader would have seen it: escapes removed rather than
   # merely stripped of their control byte, which leaves `[49m` litter behind
   # and reads as nothing at all.
@@ -272,7 +268,7 @@ else
   fail=1
 fi
 chmod 644 "$LINKDIR/secret.md"
-rm -rf "$LOG4" "$LOG4.timing" "$LINKDIR"
+rm -rf "$LOG4" "$LINKDIR"
 
 echo "ctrl-c is an escape hatch from every mode (I-37)"
 # In raw mode Ctrl-C is a *byte*, not a signal: the kernel does not turn it
