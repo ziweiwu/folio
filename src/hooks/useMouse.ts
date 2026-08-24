@@ -44,7 +44,25 @@ export function useMouse(
   }, [stdin, enabled, onWheel]);
 }
 
-/** True for input that is really a mouse report, which key handling must skip. */
+/**
+ * True for input that is really a mouse report, which key handling must skip.
+ *
+ * Matched on the *whole* report — `[<button;column;row` and its terminating
+ * `M` or `m` — rather than on the `[<` introducer alone. Ink strips a leading
+ * ESC from anything it could not parse, so the escape-prefixed form is not
+ * enough on its own and the bare introducer has to be recognised too; but a
+ * bare `[<` also occurs in ordinary text, and `useInput` drops the entire
+ * chunk this returns true for. Typing `[<` fast enough to land in one read —
+ * which is exactly the burst coalescing I-15 exists to handle — therefore
+ * swallowed those two keys *and every other key in the chunk with them*,
+ * silently, with no status message: `/` then `[<T` searched for `T`.
+ *
+ * Requiring the digits and the terminator costs nothing here and cannot match
+ * text anybody types. It assumes a report arrives whole, which is the same
+ * assumption `SGR_MOUSE` above already makes when it parses one.
+ */
+const SGR_REPORT = /\[<\d+;\d+;\d+[Mm]/;
+
 export function isMouseSequence(input: string): boolean {
-  return input.includes('\x1b[<') || input.includes('[<');
+  return SGR_REPORT.test(input);
 }

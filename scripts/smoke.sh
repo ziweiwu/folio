@@ -101,6 +101,87 @@ else
   bad "composes with grep -q (I-32)"
 fi
 
+# A file whose layout is its meaning must not go through the markdown parser.
+# Markdown joins a run of non-blank lines into one paragraph, so a source file
+# came out with every indent gone and its comments promoted to headings — the
+# viewer silently rewriting the file it was asked to show. See I-38.
+SRC_DOC="$STATE/indented.py"
+printf '# a comment\ndef load(path):\n    with open(path) as f:\n        return f.read()\n' > "$SRC_DOC"
+if $RUN --plain "$SRC_DOC" </dev/null | grep -qa '^ *with open(path) as f:$'; then
+  ok "shows a source file verbatim, indentation intact (I-38)"
+else
+  bad "shows a source file verbatim, indentation intact (I-38)"
+fi
+# The same file under --markdown still parses, so the override is not lost.
+if $RUN --plain --markdown "$SRC_DOC" </dev/null | grep -qa 'with open(path) as f: return f.read()'; then
+  ok "--markdown still forces the parser (I-38)"
+else
+  bad "--markdown still forces the parser (I-38)"
+fi
+
+# A path that is not a readable document is refused with the cause *and* the
+# remedy, rather than rendered as junk or reported as a raw errno string. A
+# directory used to print `EISDIR: illegal operation on a directory, read`, and
+# a PNG used to print screens of caret notation. See I-17, I-39.
+# Captured rather than piped into grep: these commands exit non-zero by
+# design, and under `pipefail` a pipeline reports that exit even when grep
+# found what it was looking for — so piping would report every one of these as
+# a failure whatever the message said.
+says() { # description, expected text, command...
+  local what=$1 expect=$2; shift 2
+  local got
+  got=$("$@" </dev/null 2>&1 >/dev/null)
+  case $got in
+    *"$expect"*) ok "$what" ;;
+    *) bad "$what (said: ${got:-nothing})" ;;
+  esac
+}
+
+want "refuses a directory" 1 $RUN "$STATE"
+says "says a directory is a directory (I-39)" 'is a directory' $RUN "$STATE"
+
+BIN_DOC="$STATE/binary.bin"
+printf 'PNG\r\n\032\n\000\000\000\015IHDR\000\000\001' > "$BIN_DOC"
+want "refuses a binary file" 1 $RUN "$BIN_DOC"
+says "says a binary file is binary (I-39)" 'binary, not text' $RUN "$BIN_DOC"
+
+# Binary on stdin is the same answer: the check is on the bytes, not the path.
+STDIN_SAID=$(cat "$BIN_DOC" | $RUN 2>&1 >/dev/null)
+case $STDIN_SAID in
+  *'binary, not text'*) ok "refuses binary arriving on stdin (I-39)" ;;
+  *) bad "refuses binary arriving on stdin (I-39)" ;;
+esac
+
+# A crafted document must not be able to kill the viewer. `marked`'s lexer is
+# quadratic in list nesting, and at five thousand levels it aborts the process
+# with a heap exhaustion no `try`/`catch` can intercept — so the guard has to
+# be checked end to end, at the exit status, which is the only place the
+# difference between "shown verbatim" and "SIGABRT" is visible. See I-40.
+NEST_DOC="$STATE/deepnest.md"
+python3 -c "
+import sys
+sys.stdout.write('\n'.join(' ' * i + '- item%d' % i for i in range(5000)))
+" > "$NEST_DOC"
+want "survives a pathologically nested document (I-40)" 0 $RUN --plain "$NEST_DOC"
+# Verbatim loses no text: the last item is still there.
+if $RUN --plain "$NEST_DOC" </dev/null | grep -qa 'item4999'; then
+  ok "keeps every line of it (I-40)"
+else
+  bad "keeps every line of it (I-40)"
+fi
+# And --markdown cannot force the parse that would abort.
+want "--markdown cannot override the nesting guard (I-40)" 0 $RUN --plain --markdown "$NEST_DOC"
+
+# A flag that cannot be honoured is said out loud rather than dropped: without
+# a terminal there is nothing for --watch to redraw, and it used to be accepted
+# and silently ignored.
+WATCH_SAID=$($RUN --watch "$DOC" </dev/null 2>&1 >/dev/null)
+case $WATCH_SAID in
+  *'--watch needs a terminal'*) ok "says --watch was not honoured without a terminal" ;;
+  *) bad "says --watch was not honoured without a terminal (said: ${WATCH_SAID:-nothing})" ;;
+esac
+want "still prints, and still succeeds, with --watch" 0 $RUN --watch "$DOC"
+
 # The EPIPE handler exits straight from a stream's error event, which never
 # unwinds through `main()`'s `finally { leaveScreen() }`. Restoration must not
 # depend on that finally — `screen.ts` also restores from `process.on('exit')`,

@@ -44,7 +44,9 @@ OSC 52, so it works through SSH and inside tmux where `pbcopy` can't reach.
 
 `/` searches, `n` and `N` step through matches. Search is smartcase —
 lowercase matches anything, a capital means you meant it — and a hit lands a
-third of the way down the screen so you keep the context above it.
+third of the way down the screen so you keep the context above it. Every jump
+says which match you are on out of how many, so you can tell three hits from
+thirty and see the wrap when it comes back round to the first.
 
 ![searching](https://raw.githubusercontent.com/ziweiwu/folio/main/docs/search.png)
 
@@ -92,6 +94,15 @@ Picked automatically from your terminal, or forced with `--theme`.
 markdown — Org's `*` headings aren't emphasis, and pretending otherwise
 misrepresents the file.
 
+So are source and configuration files — `.py`, `.ts`, `.json`, `.yaml`,
+dotfiles, a `Makefile`. Markdown joins consecutive lines into a paragraph, so
+parsing one of those doesn't merely style it wrongly, it deletes the
+indentation that *is* the file. `--markdown` forces the parser anyway, and
+`--text` forces verbatim on anything.
+
+A directory or a binary file is refused with a reason, not rendered as pages of
+caret notation.
+
 ## Keys
 
 ```
@@ -104,7 +115,7 @@ tab ⇧tab     pick a link           enter        follow it
 backspace    go back               y            copy the code block on screen
 /            search                n N          next, previous match
 t            contents              r            reload from disk
-?            all keys              q esc        quit
+?            all keys              q esc ^C     quit
 ```
 
 ## Options

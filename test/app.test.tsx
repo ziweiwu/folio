@@ -4,6 +4,7 @@ import { App, type Source } from '../src/app.js';
 import { stripAnsi } from '../src/core/ansi.js';
 import { parseArgs } from '../src/core/options.js';
 import { pickTheme } from '../src/ui/theme.js';
+import { isMouseSequence } from '../src/hooks/useMouse.js';
 
 /**
  * The few behaviours that only exist once the component is running.
@@ -782,6 +783,208 @@ describe('I-35 pasted text is content, never commands', () => {
     app.stdin.write('G');
     await settle();
     expect(app.lastFrame() ?? '').toContain('100%');
+    app.unmount();
+  });
+});
+
+describe('I-37 there is always a way out', () => {
+  /* Ctrl-C is what a reader falls back on when they do not know an app, and
+     Ink is deliberately told not to act on it (`exitOnCtrlC: false`) so that a
+     `c` typed into the search box is never mistaken for it. That put the whole
+     decision on this component — and it was only ever made in the doc branch,
+     so `/` or `t` and then Ctrl-C did nothing at all. The two modes it was
+     dead in were exactly the two a reader can get stuck in: a full-screen pane
+     and a prompt. A blank frame is this renderer's signature for an unmounted
+     app, the same signal the `q`-from-the-contents test uses. */
+  const CTRL_C = '\x03';
+
+  it.each([
+    ['the document', ''],
+    ['the search prompt', '/'],
+    ['a half-typed query', '/cat'],
+    ['the contents', 't'],
+    ['the help pane', '?'],
+  ])('I-37 ctrl-c quits from %s', async (_what, opener) => {
+    const app = mount({ initial: { text: SECTIONS } });
+    await settle();
+    if (opener !== '') {
+      app.stdin.write(opener);
+      await settle();
+      expect(app.lastFrame() ?? '').not.toBe('');
+    }
+    app.stdin.write(CTRL_C);
+    await settle();
+    expect((app.lastFrame() ?? '').trim()).toBe('');
+    app.unmount();
+  }, 30_000);
+
+  it('I-37 does not mistake a c typed into the query for it', async () => {
+    // The reason Ink is not allowed to handle Ctrl-C itself in the first place.
+    const app = mount({ initial: { text: SECTIONS } });
+    await settle();
+    app.stdin.write('/cc');
+    await settle();
+    expect(app.lastFrame() ?? '').toContain('/cc');
+    app.unmount();
+  });
+});
+
+/** The sideways offset the status bar is currently advertising, or 0. */
+const shiftOf = (frame: string) => Number(/↔ (\d+)/.exec(frame)?.[1] ?? 0);
+
+describe('I-36 the sideways offset follows the rows on screen', () => {
+  /* `maxHOffset` is a property of the rows in the viewport, so it shrinks as
+     the reader scrolls while the offset they panned to does not. Panning right
+     over a 300-cell block and scrolling down to a 60-cell one sliced every row
+     from a column past its end: the block rendered blank, with a `‹` and no
+     `›` — nothing did continue rightwards — so there was no mark to say the
+     content was elsewhere and no clue which key would bring it back.
+
+     Scrolled with `j` rather than `G`, which resets the offset to zero and so
+     cannot reproduce anything. The filler is longer than a viewport on purpose:
+     the two blocks have to be on separate screens, or the wider one is still
+     granting the reach that the narrower one is being sliced against. */
+  const FILLER = Array.from({ length: 40 }, (_, i) => `filler paragraph ${i}\n`).join('\n');
+  const BLOCKS = [
+    '```sh',
+    `${'A'.repeat(300)} tail-of-the-wide-one`,
+    '```',
+    '',
+    FILLER,
+    '```sh',
+    `${'B'.repeat(60)} tail-of-the-narrow-one`,
+    '```',
+    '',
+  ].join('\n');
+
+  const panThenScroll = async () => {
+    const app = mount({ initial: { text: BLOCKS }, overflow: 'scroll' });
+    await settle();
+    app.stdin.write('l'.repeat(60));
+    await settle();
+    const panned = stripAnsi(app.lastFrame() ?? '');
+    for (let i = 0; i < 12; i++) {
+      app.stdin.write('d');
+      await settle();
+    }
+    return { app, panned, landed: stripAnsi(app.lastFrame() ?? '') };
+  };
+
+  it('I-36 keeps a narrower block readable after panning over a wider one', async () => {
+    const { app, panned, landed } = await panThenScroll();
+    // The pan really did move, or the rest of this proves nothing.
+    expect(panned).toContain('↔');
+    expect(landed).toContain('tail-of-the-narrow-one');
+    app.unmount();
+  }, 30_000);
+
+  it('I-36 never reports a shift the rows on screen cannot reach', async () => {
+    const { app, panned, landed } = await panThenScroll();
+    expect(shiftOf(panned)).toBeGreaterThan(0);
+    /* The bar's `↔` is what tells a reader the `›` on a row is something `l`
+       can reach (I-26). Left at the wide block's figure it promised a shift
+       that no longer existed. */
+    expect(shiftOf(landed)).toBeLessThan(shiftOf(panned));
+    app.unmount();
+  }, 30_000);
+});
+
+describe('I-15 a mouse report is skipped, and nothing else is', () => {
+  /* Mouse reports reach Ink's key parser as well as the raw stream, so the key
+     handler has to recognise and skip them — and Ink strips a leading ESC from
+     anything it could not parse, so it cannot rely on the escape being there.
+     Recognising them by the bare `[<` introducer made the filter match plain
+     text: `useInput` drops the *whole chunk* a report is found in, so typing
+     `[<` fast enough to land in one read swallowed those two keys and every
+     other key in the chunk with them, silently. See src/hooks/useMouse.ts. */
+  it('I-15 skips a real SGR report, with or without its escape', () => {
+    expect(isMouseSequence('\x1b[<64;10;5M')).toBe(true);
+    expect(isMouseSequence('[<64;10;5M')).toBe(true);
+    expect(isMouseSequence('[<0;1;1m')).toBe(true);
+    // Several batched into one read is still a read of mouse reports.
+    expect(isMouseSequence('[<64;10;5M[<64;10;6M')).toBe(true);
+  });
+
+  it('I-15 does not take ordinary text for a mouse report', () => {
+    for (const typed of ['[<', 'a[<b', '[<T>', 'Array[<T>]', 'j[<k', '[<;;M']) {
+      expect(isMouseSequence(typed), typed).toBe(false);
+    }
+  });
+
+  it('I-15 types "[<" into the query instead of dropping the burst', async () => {
+    const app = mount({ initial: { text: '# D\n\nsome [<T> text\n' } });
+    await settle();
+    app.stdin.write('/');
+    await settle();
+    // One read, the way key repeat or a coalesced read delivers it.
+    app.stdin.write('[<T');
+    await settle();
+    expect(app.lastFrame() ?? '').toContain('/[<T');
+    app.unmount();
+  });
+
+  it('I-15 still ignores a wheel report arriving as keys', async () => {
+    const app = mount({ initial: { text: SECTIONS } });
+    await settle();
+    const before = app.lastFrame() ?? '';
+    app.stdin.write('\x1b[<65;10;5M');
+    await settle();
+    // Skipped, not replayed as the keystrokes `[`, `<`, `6`, `5`, … — `5` is
+    // nothing, but `M` and `m` would be, and the digits would not scroll.
+    expect(app.lastFrame() ?? '').toBe(before);
+    app.unmount();
+  });
+});
+
+describe('a search says where you are in it', () => {
+  /* The count is shown while the query is being typed and then vanished the
+     moment it was committed — exactly when it starts to matter. `n` moved the
+     viewport and said nothing, so there was no way to tell three matches from
+     thirty, or to notice the wrap from the last back to the first. */
+  const REPEATED = Array.from({ length: 5 }, (_, i) => `## Section ${i}\n\nthe needle is here\n`).join('\n');
+  const CR = String.fromCharCode(13);
+
+  it('reports which match, out of how many, on committing', async () => {
+    const app = mount({ initial: { text: REPEATED } });
+    await settle();
+    app.stdin.write('/needle');
+    await settle();
+    app.stdin.write(CR);
+    await settle();
+    expect(app.lastFrame() ?? '').toContain('of 5');
+    app.unmount();
+  });
+
+  it('counts up as n steps, and wraps back to the first', async () => {
+    const app = mount({ initial: { text: REPEATED } });
+    await settle();
+    app.stdin.write('/needle');
+    await settle();
+    app.stdin.write(CR);
+    await settle();
+    const seen: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      app.stdin.write('n');
+      await settle();
+      seen.push(/match (\d+) of (\d+)/.exec(app.lastFrame() ?? '')?.[0] ?? 'none');
+    }
+    // Five matches, five presses: every one is named and the cycle closes.
+    expect(new Set(seen).size).toBe(5);
+    expect(seen.at(-1)).toBe('match 1 of 5');
+    app.unmount();
+  }, 30_000);
+
+  it('still says so when there is nothing to find', async () => {
+    /* A short query on purpose: `/haystack` is nine different keys in one read
+       and the paste guard refuses it (I-35), which is correct and is not what
+       this test is about. */
+    const app = mount({ initial: { text: REPEATED } });
+    await settle();
+    app.stdin.write('/zzz');
+    await settle();
+    app.stdin.write(CR);
+    await settle();
+    expect(app.lastFrame() ?? '').toContain('no match for "zzz"');
     app.unmount();
   });
 });

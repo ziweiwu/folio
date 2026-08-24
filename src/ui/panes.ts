@@ -145,7 +145,7 @@ const KEYS: ReadonlyArray<readonly [string, string]> = [
   ['y', 'copy the code block on screen'],
   ['r', 'reload from disk'],
   ['?', 'this list'],
-  ['q  esc', 'quit'],
+  ['q  esc  ^C', 'quit'],
 ];
 
 export function helpPane(width: number, height: number, theme: Theme, level: ColorLevel): Pane {

@@ -142,6 +142,77 @@ describe('wide content scrolls sideways instead of being chopped', () => {
     expect(headingOnly).toBe(0);
   });
 
+  /* The defect this guards: `maxHOffset` is a property of the rows on screen,
+     so it changes as the reader scrolls while the offset they panned to does
+     not. Panning right over a wide block and scrolling down to a narrower one
+     sliced every row from a column past its end — the block came out blank,
+     with a `‹` and no `›`, because nothing did continue past the right edge.
+     The viewer clamps to `maxHOffset` before composing; this pins both halves,
+     so a clamp deleted anywhere would fail here rather than on someone's
+     screen. See I-36. */
+  const TWO_BLOCKS = `# Two
+
+\`\`\`sh
+${'A'.repeat(300)} tail-of-the-wide-one
+\`\`\`
+
+\`\`\`sh
+${'B'.repeat(60)} tail-of-the-narrow-one
+\`\`\`
+`;
+
+  describe('I-36 a horizontal offset is bounded by the rows on screen', () => {
+    const doc = layoutDoc(TWO_BLOCKS, opts({ width: 79, overflow: 'scroll' }));
+    const rowOf = (needle: string) => doc.lines.findIndex((l) => l.plain.includes(needle));
+    const narrow = rowOf('tail-of-the-narrow-one');
+    const wide = rowOf('tail-of-the-wide-one');
+    const view = (offset: number, sideways: number) =>
+      composeFrame(doc, { offset, height: 3, total: doc.lines.length, hOffset: sideways }, 80, theme, 0)
+        .map(stripAnsi);
+
+    it('I-36 the two blocks really do differ in reach, or this proves nothing', () => {
+      expect(wide).toBeGreaterThanOrEqual(0);
+      expect(narrow).toBeGreaterThan(wide);
+      const reachWide = maxHOffset(doc, { offset: wide, height: 1, total: doc.lines.length }, 80);
+      const reachNarrow = maxHOffset(doc, { offset: narrow, height: 1, total: doc.lines.length }, 80);
+      expect(reachWide).toBeGreaterThan(reachNarrow);
+    });
+
+    it('I-36 an offset past a row’s end would blank it — the bug, pinned', () => {
+      const stale = maxHOffset(doc, { offset: wide, height: 1, total: doc.lines.length }, 80);
+      const [row] = view(narrow, stale);
+      expect(row!.replace(/[‹›│┃]/g, '').trim()).toBe('');
+    });
+
+    it('I-36 clamping to the reach of the visible rows keeps the content on screen', () => {
+      const stale = maxHOffset(doc, { offset: wide, height: 1, total: doc.lines.length }, 80);
+      const reach = maxHOffset(doc, { offset: narrow, height: 1, total: doc.lines.length }, 80);
+      const [row] = view(narrow, Math.min(stale, reach));
+      expect(row).toContain('B');
+    });
+
+    /* A shorter row beside a wider one *may* legitimately run out: pan far
+       enough right and there is nothing of it left to show, which is what
+       `less -S` does too and what the `‹` at the edge says. What must never
+       happen is the screen running out of the row that granted the reach in
+       the first place — that is the row the reader panned to see, and its
+       going blank is the defect rather than an edge of it. */
+    it('I-36 the row that grants the reach still shows content at any reachable offset', () => {
+      for (let offset = 0; offset < doc.lines.length; offset++) {
+        const reach = maxHOffset(doc, { offset, height: 3, total: doc.lines.length }, 80);
+        if (reach === 0) continue;
+        const visible = doc.lines.slice(offset, offset + 3);
+        const widest = visible.reduce((best, l, i) =>
+          l.wide === true && l.plain.length > (visible[best]?.plain.length ?? -1) ? i : best, 0);
+        for (const h of [0, 1, Math.floor(reach / 2), reach]) {
+          const row = view(offset, Math.min(h, reach))[widest]!;
+          expect(row.replace(/[‹›│┃]/g, '').trim(), `offset ${offset} row ${widest} at h=${h}`)
+            .not.toBe('');
+        }
+      }
+    });
+  });
+
   it('wrap mode is unaffected by a horizontal offset', () => {
     const doc = layoutDoc(WIDE, opts({ width: 75, overflow: 'wrap' }));
     const at = (h: number) =>

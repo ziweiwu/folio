@@ -53,6 +53,23 @@ function parseWidth(raw: string | undefined): number | null {
   return n;
 }
 
+/**
+ * Consume every remaining argument as the file to read.
+ *
+ * Returns the failure when there is more than one, or null when it worked.
+ * Split out of `parseArgs` so the `--` case stays one statement: the loop and
+ * its guard nested four deep inside the switch, which is where the arm's own
+ * shape stops being readable.
+ */
+function takeFile(parsed: Options, rest: string[]): ParseResult | null {
+  while (rest.length > 0) {
+    const name = rest.shift()!;
+    if (parsed.file !== null) return bad('only one file can be read at a time');
+    parsed.file = name;
+  }
+  return null;
+}
+
 export function parseArgs(argv: readonly string[]): ParseResult {
   const o: Options = { ...DEFAULTS };
   const rest = [...argv];
@@ -118,6 +135,15 @@ export function parseArgs(argv: readonly string[]): ParseResult {
       case '-':
         o.file = null;
         break;
+      /* Everything after `--` is a filename, however it is spelled. The
+         convention every other tool follows, and the only way to open a file
+         whose name begins with a dash — without it `folio -- -w` reported an
+         unknown option and there was no spelling that worked. */
+      case '--': {
+        const named = takeFile(o, rest);
+        if (named !== null) return named;
+        break;
+      }
       default: {
         if (flag.startsWith('-') && flag !== '-') return bad(`unknown option ${flag}`);
         if (o.file !== null) return bad('only one file can be read at a time');

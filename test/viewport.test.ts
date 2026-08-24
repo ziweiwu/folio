@@ -9,7 +9,7 @@ import { composeFrame, scrollPercent, scrollbar, sectionAt, statusBar } from '..
 import { centre, overlayRows } from '../src/ui/overlay.js';
 import { helpPane, tocPane } from '../src/ui/panes.js';
 import { layoutDoc } from '../src/md/layout.js';
-import { isMarkdownPath, layoutText } from '../src/md/text.js';
+import { isMarkdownPath, layoutText, looksBinary, nestsTooDeeply } from '../src/md/text.js';
 import { pickTheme } from '../src/ui/theme.js';
 import { fixture, opts } from './helpers.js';
 
@@ -177,6 +177,31 @@ describe('status bar', () => {
       }
       expect(ansiWidth(statusBar(long, w, theme, 3)), `${w} cols`).toBe(w);
     }
+  });
+
+  it('I-26 keeps the escape hatch at the narrowest usable terminal', () => {
+    /* The promise is that `q quit` outlives everything else, and it did not:
+       the name and the percentage were sized first and the legend was offered
+       what remained, so below about 27 columns there was nothing remaining and
+       the bar showed no legend at all — on a tmux split, which is exactly the
+       terminal the rule was written for. The name gives way first, then the
+       percentage; the legend is last. */
+    const long = { ...info, hints: ['/ search', 't toc', '? keys', 'q quit'] };
+    for (let w = 11; w <= 40; w++) {
+      const rendered = stripAnsi(statusBar(long, w, theme, 0));
+      expect(rendered, `${w} cols: ${JSON.stringify(rendered)}`).toContain('q quit');
+      expect(ansiWidth(statusBar(long, w, theme, 3)), `${w} cols`).toBe(w);
+    }
+  });
+
+  it('I-26 gives up the percentage before the legend, not after it', () => {
+    const long = { ...info, hints: ['/ search', 't toc', '? keys', 'q quit'] };
+    // Wide enough for both, and the position is there.
+    expect(stripAnsi(statusBar(long, 40, theme, 0))).toContain('%');
+    // Too narrow for both, and it is the position that goes.
+    const narrow = stripAnsi(statusBar(long, 20, theme, 0));
+    expect(narrow).toContain('q quit');
+    expect(narrow).not.toContain('%');
   });
 
   it('drops the section before it drops the position', () => {
@@ -648,6 +673,10 @@ describe('I-15 key repeat arrives in bursts', () => {
   });
 })
 
+/** A document of `depth` nested list items, one level deeper per line. */
+const nest = (depth: number) =>
+  Array.from({ length: depth }, (_, i) => ' '.repeat(i) + `- item${i}`).join('\n');
+
 describe('formats this viewer does not parse', () => {
   it('shows an org file verbatim rather than misreading it as markdown', () => {
     const src = fixture('sample.org');
@@ -684,6 +713,124 @@ describe('formats this viewer does not parse', () => {
     expect(isMarkdownPath('notes.org')).toBe(false);
     expect(isMarkdownPath('SERVER.LOG')).toBe(false);
     expect(isMarkdownPath('notes.txt')).toBe(false);
+  });
+
+  /* Only the prose formats were ever routed away from the parser. Everything
+     else — source, config, data — went through it, and markdown does not merely
+     style those wrongly, it destroys them: a paragraph is a run of non-blank
+     lines joined with spaces, so a Python file arrived as a single line with
+     every indent gone, `# comment` became a heading and `* item` a bullet.
+     Indentation *is* the file for most of this list. See I-38. */
+  describe('I-38 formats whose layout is their meaning are not parsed as markdown', () => {
+    it('I-38 routes source, config and data away from the parser', () => {
+      for (const path of [
+        'app.py', 'main.go', 'index.ts', 'server.js', 'style.css', 'Cargo.toml',
+        'package.json', 'compose.yaml', 'query.sql', 'run.sh', 'data.csv',
+        'fix.patch', 'page.html', 'src/deep/module.rb',
+      ]) {
+        expect(isMarkdownPath(path), path).toBe(false);
+      }
+    });
+
+    it('I-38 treats dotfiles and build files as configuration', () => {
+      for (const path of [
+        '.gitignore', '.zshrc', '.env', '.env.local', '.eslintrc.json',
+        'Makefile', 'Dockerfile', 'a/b/Gemfile',
+      ]) {
+        expect(isMarkdownPath(path), path).toBe(false);
+      }
+    });
+
+    it('I-38 keeps a hidden markdown file markdown', () => {
+      // A leading dot hides a file; it does not change what the file is.
+      for (const path of ['.notes.md', '.github/README.md', 'docs/.draft.markdown']) {
+        expect(isMarkdownPath(path), path).toBe(true);
+      }
+    });
+
+    it('I-38 reads the extension from the basename, not the path', () => {
+      // A dot in a *directory* name is not the file's extension.
+      expect(isMarkdownPath('/etc/nginx.d/README')).toBe(true);
+      expect(isMarkdownPath('/etc/nginx.d/notes.py')).toBe(false);
+    });
+
+    it('I-38 still defaults an unknown or absent extension to markdown', () => {
+      for (const path of ['README', 'CHANGELOG', 'notes.mdx', 'weird.zzz', 'docs/guide.md']) {
+        expect(isMarkdownPath(path), path).toBe(true);
+      }
+    });
+
+    it('I-40 refuses to parse nesting deep enough to be an attack', () => {
+      /* `marked` is O(depth²) here: 1,600 levels take the best part of a
+         second and 5,000 abort the process outright, which no `try`/`catch`
+         can see because the parse is one synchronous call. */
+      expect(nestsTooDeeply(nest(5000))).toBe(true);
+      // Far above anything a person writes, so ordinary documents are untouched.
+      expect(nestsTooDeeply(nest(40))).toBe(false);
+      expect(nestsTooDeeply(fixture('kitchen-sink.md'))).toBe(false);
+      expect(nestsTooDeeply('')).toBe(false);
+      // Ordered lists nest the same way, and are bounded the same way.
+      const ordered = Array.from({ length: 400 }, (_, i) => ' '.repeat(i) + `${i + 1}. item`).join('\n');
+      expect(nestsTooDeeply(ordered)).toBe(true);
+      /* Indentation on its own is not the trigger — only a line that *opens a
+         list item* can nest, so an indented paragraph is left alone. */
+      expect(nestsTooDeeply(' '.repeat(400) + 'just some deeply indented prose')).toBe(false);
+    });
+
+    it('I-40 lays the pathological document out in bounded time', () => {
+      const src = nest(5000);
+      // Verbatim, which is what the guard falls back to, and which loses no text.
+      const started = Date.now();
+      const doc = layoutText(src, opts({ level: 0, width: 80 }));
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(doc.lines.length).toBeGreaterThan(0);
+      expect(doc.lines.some((l) => l.plain.includes('item4999'))).toBe(true);
+    });
+
+    it('I-39 tells a document from a file of bytes', () => {
+      /* A PNG used to render as screens of caret notation: safe, because
+         control bytes are neutralised on the way in (I-29), and useless. The
+         NUL is what separates them — every binary header has one and no UTF-8
+         text does. */
+      expect(looksBinary('\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR')).toBe(true);
+      expect(looksBinary('# A perfectly ordinary document\n\nwith prose.\n')).toBe(false);
+      // Emoji, CJK and an escape the sanitiser will render as `^[` are all text.
+      expect(looksBinary('# 标题 ⚠️\n\n\u001b[2J is content, not a command.\n')).toBe(false);
+      expect(looksBinary('')).toBe(false);
+      /* Bounded, so a huge document is not read twice: a NUL past the sniff
+         window is not found, which is the deliberate trade — the answer is
+         always in the header. */
+      expect(looksBinary('a'.repeat(9000) + '\u0000')).toBe(false);
+    });
+
+    it('I-38 keeps every indent and line break of a source file', () => {
+      const src = '# a comment\ndef load(path):\n    with open(path) as f:\n        return f.read()\n';
+      const doc = layoutText(src, opts({ level: 0, width: 60, maxWidth: 0 }));
+      const plain = doc.lines.map((l) => l.plain);
+      expect(plain).toEqual([
+        '  # a comment',
+        '  def load(path):',
+        '      with open(path) as f:',
+        '          return f.read()',
+      ]);
+    });
+  });
+
+  it('I-17 takes everything after -- as a filename', () => {
+    /* The convention every other tool follows, and the only way to name a file
+       that begins with a dash: without it there was no spelling that worked. */
+    const dashed = parseArgs(['--', '-w']);
+    expect(dashed.ok && dashed.options.file).toBe('-w');
+    const plain = parseArgs(['--', 'README.md']);
+    expect(plain.ok && plain.options.file).toBe('README.md');
+    // Options before it are still options.
+    const both = parseArgs(['--plain', '--', '--help']);
+    expect(both.ok && both.options.plain).toBe(true);
+    expect(both.ok && both.options.file).toBe('--help');
+    expect(both.ok && both.options.help).toBe(false);
+    // And one file is still the limit.
+    const two = parseArgs(['--', 'a.md', 'b.md']);
+    expect(two.ok).toBe(false);
   });
 
   it('takes an explicit override from the command line', () => {

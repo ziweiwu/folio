@@ -8,7 +8,7 @@ import { render } from 'ink';
 import { ansiWidth, detectColorLevel, paint, sliceAnsi, type ColorLevel } from './core/ansi.js';
 import { parseArgs, type Options } from './core/options.js';
 import { layoutDoc } from './md/layout.js';
-import { isMarkdownPath, layoutText } from './md/text.js';
+import { isMarkdownPath, layoutText, looksBinary, nestsTooDeeply } from './md/text.js';
 import { collectLanguages, createHighlighter } from './md/highlight.js';
 import { EMPTY, parsePositions, recall, remember, type Positions } from './core/positions.js';
 import { sanitizeLine } from './core/sanitize.js';
@@ -27,8 +27,10 @@ Usage
   the rendered document and exits, so it composes with less, head and friends.
   With no file it reads stdin.
 
-  Markdown is parsed. Formats it does not understand — .org, .txt, .rst, .adoc,
-  a log — are shown verbatim rather than misread as markdown.
+  Markdown is parsed. Formats it does not understand — .org, .txt, .rst, a log,
+  and source or configuration files like .py, .json and .yaml — are shown
+  verbatim rather than misread as markdown, which would eat their indentation.
+  A directory or a binary file is refused rather than rendered.
 
 Options
   -w, --width N       Text column width (default 88). 0 fills the terminal.
@@ -56,7 +58,7 @@ Keys
   /            search
   n N          next, previous match
   t            contents          r            reload from disk
-  ?            all keys          q esc        quit
+  ?            all keys          q esc ^C     quit
   wheel        three lines
 
 Examples
@@ -250,10 +252,18 @@ async function main(): Promise<void> {
       text = readFileSync(options.file, 'utf8');
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
+      /* Cause *and* remedy, which is what I-17 asks for and what an errno
+         string on its own does not give: `EISDIR: illegal operation on a
+         directory, read` tells a reader who typed `folio docs/` nothing they
+         did not know and nothing about what to do instead. */
       fail(
         e.code === 'ENOENT'
           ? `${options.file}: no such file. Check the path, or pass the document on stdin.`
-          : `${options.file}: ${e.message}`,
+          : e.code === 'EISDIR'
+            ? `${options.file}: is a directory. Name a file inside it.`
+            : e.code === 'EACCES'
+              ? `${options.file}: permission denied. Check the file's mode.`
+              : `${options.file}: ${e.message}`,
         1,
       );
     }
@@ -267,9 +277,30 @@ async function main(): Promise<void> {
     fail('no file given, and stdin is a terminal. Pass a file, or pipe one in.', 2);
   }
 
+  /* A document is text. Anything with a NUL byte in it is not, and neither
+     the markdown parser nor the verbatim path can do anything useful with it:
+     the bytes survive sanitising as caret notation (I-29, so it is safe) and
+     the reader gets screens of `^@^C^H` where a document should be. Saying so
+     is better than drawing it. Checked on a prefix because that is where the
+     answer is — every binary format on earth has a NUL in its header, and no
+     UTF-8 text has one anywhere. See I-39. */
+  if (looksBinary(text)) {
+    /* The path as it was typed, the way every other read failure reports it —
+       `name` is the basename, which is right for the status bar and wrong
+       here: `folio sub/data.bin` said only `data.bin`, so the one message that
+       names a file the reader may not have meant to open was the one that
+       dropped the directory it was in. */
+    fail(`${options.file ?? 'stdin'}: this is binary, not text. folio reads UTF-8 documents.`, 1);
+  }
+
+  /* The nesting guard overrides `--markdown` as well as the extension: it is
+     not a preference about how to show a file but a refusal to hand the parser
+     an input that would abort the process before anything could be drawn. See
+     I-40. */
+  const markdown = (options.markdown ?? isMarkdownPath(options.file)) && !nestsTooDeeply(text);
+
   /* Colour is off when writing to a pipe, so `viewer x.md | cat` stays clean;
      FORCE_COLOR overrides that for `| less -R`. See I-11. */
-  const markdown = options.markdown ?? isMarkdownPath(options.file);
 
   const wantsColor = process.stdout.isTTY || (process.env.FORCE_COLOR ?? '') !== '';
   const level: ColorLevel = options.plain || !wantsColor ? 0 : detectColorLevel();
@@ -282,6 +313,15 @@ async function main(): Promise<void> {
   const interactive = options.pager && process.stdout.isTTY === true && input !== null;
 
   if (!interactive) {
+    /* `--watch` cannot be honoured without a terminal to redraw on, and the
+       flag was accepted and then quietly dropped: `folio --watch x.md | less`
+       and `--watch --no-pager` both printed once and exited with nothing said.
+       Saying so is the whole fix — refusing would break a redirect that has
+       always worked, and re-printing into a pipe on every save is not what
+       anybody means by it. */
+    if (options.watch) {
+      process.stderr.write('folio: --watch needs a terminal; printed once instead.\n');
+    }
     // One-shot has one chance to get it right, so it waits for highlighting.
     printOneShot(await makeSource(text, theme.shiki, level), options, level, options.theme, markdown);
     return;
@@ -332,7 +372,7 @@ async function main(): Promise<void> {
            file stats perfectly well. Nothing below this line runs unless the
            read worked, so a failure leaves the viewer exactly where it was. */
         const body = readFileSync(found, 'utf8');
-        const asMarkdown = options.markdown ?? isMarkdownPath(found);
+        const asMarkdown = (options.markdown ?? isMarkdownPath(found)) && !nestsTooDeeply(body);
         if (currentFile !== null) {
           positions.entries[currentFile] = { block: currentBlock, at: Date.now() };
           trail.push({ dir: currentDir!, file: currentFile });
