@@ -203,7 +203,8 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # fast. At 60s for the mount the keys went out before the app existed — Tab
 # reached nothing, and the check reported a missing message rather than a slow
 # machine.
-{ await "$LOG4" "${ESC}[?1049h" 150
+{ t0=$SECONDS
+  await "$LOG4" "${ESC}[?1049h" 150; echo "mount:$((SECONDS-t0))s" > "$LOG4.timing"; t0=$SECONDS
   # Mounted is not drawn, and Tab picks from links the layout has to have
   # produced first. Pressing it half a second after the alternate screen
   # appeared is the fixed-sleep race this script's own header warns about: on a
@@ -213,9 +214,9 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
   # same frame as the document, so it says just as surely that the layout has
   # run and there are links to pick — and unlike the prose it cannot be moved
   # by wrapping, a theme, or where the reader happens to be.
-  await "$LOG4" 'q quit' 150
+  await "$LOG4" 'q quit' 150; echo "painted:$((SECONDS-t0))s" >> "$LOG4.timing"; t0=$SECONDS
   printf '\t'; sleep 0.5; printf '\r'
-  await "$LOG4" 'permission denied' 60
+  await "$LOG4" 'permission denied' 60; echo "message:$((SECONDS-t0))s" >> "$LOG4.timing"
   printf '?'; sleep 2; printf 'q'; sleep 2; } \
   | script -q "$LOG4" bash -c "$VIEWER $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
@@ -235,6 +236,13 @@ else
     "$(seen "$LOG4" 'q quit')" "$(seen "$LOG4" 'Secret')"
   printf '        said "no links": %s | "press tab": %s | "not found": %s\n' \
     "$(seen "$LOG4" 'no links in this document')" "$(seen "$LOG4" 'press tab')" "$(seen "$LOG4" 'not found')"
+  printf '        showed the document: %s | waits: %s\n' \
+    "$(seen "$LOG4" 'Main')" "$(tr '\n' ' ' < "$LOG4.timing" 2>/dev/null)"
+  # The screen as a reader would have seen it: escapes removed rather than
+  # merely stripped of their control byte, which leaves `[49m` litter behind
+  # and reads as nothing at all.
+  printf '        last frame: %s\n' \
+    "$(LC_ALL=C sed -e $'s/\033\[[0-9;?]*[a-zA-Z]//g' -e $'s/\033\][^\007]*\007//g' -e 's/[^[:print:]]//g' "$LOG4" | tail -c 400 | tr -s ' ')"
   fail=1
 fi
 if grep -qaF 'at readFileSync' "$LOG4"; then
@@ -250,7 +258,7 @@ else
   fail=1
 fi
 chmod 644 "$LINKDIR/secret.md"
-rm -rf "$LOG4" "$LINKDIR"
+rm -rf "$LOG4" "$LOG4.timing" "$LINKDIR"
 
 echo "ctrl-c is an escape hatch from every mode (I-37)"
 # In raw mode Ctrl-C is a *byte*, not a signal: the kernel does not turn it
