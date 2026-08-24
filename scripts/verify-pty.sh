@@ -66,6 +66,9 @@ check() { # name pattern
     fail=1
   fi
 }
+# Whether a marker ever reached the typescript, for a failure to explain itself.
+seen() { grep -qaF "$2" "$1" && printf 'yes' || printf 'no'; }
+
 refute() {
   if grep -qaF "$2" "$LOG"; then
     printf '  FAIL  %s\n' "$1"
@@ -190,7 +193,11 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
   # appeared is the fixed-sleep race this script's own header warns about: on a
   # runner slow enough to lose it, Tab found no links, Enter said so, and the
   # check reported that an unreadable link was not reported.
-  await "$LOG4" 'Go to' 150
+  # The status bar's legend, not the document's own words: it is drawn in the
+  # same frame as the document, so it says just as surely that the layout has
+  # run and there are links to pick — and unlike the prose it cannot be moved
+  # by wrapping, a theme, or where the reader happens to be.
+  await "$LOG4" 'q quit' 150
   printf '\t'; sleep 0.5; printf '\r'
   await "$LOG4" 'permission denied' 60
   printf '?'; sleep 2; printf 'q'; sleep 2; } \
@@ -204,9 +211,14 @@ elif [ "$unreadable" -eq 0 ]; then
   printf '  SKIP  reports an unreadable link target — this user can read mode 000\n'
 else
   printf '  FAIL  reports an unreadable link target\n'
-  # What the viewer actually said, with the escapes stripped: without it a
-  # failure here is a guess about a machine nobody can log in to.
-  printf '        last frame: %s\n' "$(LC_ALL=C tr -d '\000-\010\013\014\016-\037' < "$LOG4" | tail -c 300 | tr -s ' ')"
+  # Which of the things that had to happen did. Dumping the tail says almost
+  # nothing once the escapes are stripped; what separates the failure modes is
+  # whether the viewer ever drew at all, whether it found a link to pick, and
+  # what it said instead of the message this check wants.
+  printf '        drew a frame: %s | reached the target: %s\n' \
+    "$(seen "$LOG4" 'q quit')" "$(seen "$LOG4" 'Secret')"
+  printf '        said "no links": %s | "press tab": %s | "not found": %s\n' \
+    "$(seen "$LOG4" 'no links in this document')" "$(seen "$LOG4" 'press tab')" "$(seen "$LOG4" 'not found')"
   fail=1
 fi
 if grep -qaF 'at readFileSync' "$LOG4"; then
