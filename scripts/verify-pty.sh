@@ -163,6 +163,12 @@ LINKDIR=$(mktemp -d "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 printf '# Main\n\nGo to [secret](./secret.md) now.\n' > "$LINKDIR/main.md"
 printf '# Secret\n' > "$LINKDIR/secret.md"
 chmod 000 "$LINKDIR/secret.md"
+# The whole check rests on this file being unreadable, and `chmod 000` does not
+# achieve that for every user — root reads it regardless. Asserted rather than
+# assumed, so an environment that cannot produce an unreadable file says so
+# instead of being reported as the viewer failing to notice one.
+unreadable=1
+if cat "$LINKDIR/secret.md" >/dev/null 2>&1; then unreadable=0; fi
 LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # Tab picks the link, Enter follows it. Then `?` opens the help overlay — which
 # only draws if the app is still running — and `q` quits.
@@ -171,21 +177,36 @@ LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-link.XXXXXX")
 # outcomes apart: the crash prints the same words in its stack trace, and the
 # screen is restored on the way out either way. What separates them is whether
 # anything is still there to draw the next frame.
-{ await "$LOG4" "${ESC}[?1049h" 60
+#
+# The budgets are generous for the reason the header gives: this is the fourth
+# viewer the script starts, on a runner that may be loaded, and `await` returns
+# the instant its marker lands so a large budget costs nothing when things are
+# fast. At 60s for the mount the keys went out before the app existed — Tab
+# reached nothing, and the check reported a missing message rather than a slow
+# machine.
+{ await "$LOG4" "${ESC}[?1049h" 150
   # Mounted is not drawn, and Tab picks from links the layout has to have
   # produced first. Pressing it half a second after the alternate screen
   # appeared is the fixed-sleep race this script's own header warns about: on a
   # runner slow enough to lose it, Tab found no links, Enter said so, and the
   # check reported that an unreadable link was not reported.
-  await "$LOG4" 'Go to' 60
+  await "$LOG4" 'Go to' 150
   printf '\t'; sleep 0.5; printf '\r'
-  await "$LOG4" 'permission denied' 30
-  printf '?'; sleep 1; printf 'q'; sleep 1; } \
+  await "$LOG4" 'permission denied' 60
+  printf '?'; sleep 2; printf 'q'; sleep 2; } \
   | script -q "$LOG4" bash -c "npx tsx src/cli.tsx $LINKDIR/main.md" >/dev/null 2>&1
 if grep -qaF 'permission denied' "$LOG4"; then
   printf '  ok    reports an unreadable link target\n'
+elif [ "$unreadable" -eq 0 ]; then
+  # Not a failure of the app: this user can read a mode-000 file, so the
+  # condition the check needs never existed. Said out loud, because a check
+  # that quietly skips itself is indistinguishable from one that passed.
+  printf '  SKIP  reports an unreadable link target — this user can read mode 000\n'
 else
   printf '  FAIL  reports an unreadable link target\n'
+  # What the viewer actually said, with the escapes stripped: without it a
+  # failure here is a guess about a machine nobody can log in to.
+  printf '        last frame: %s\n' "$(LC_ALL=C tr -d '\000-\010\013\014\016-\037' < "$LOG4" | tail -c 300 | tr -s ' ')"
   fail=1
 fi
 if grep -qaF 'at readFileSync' "$LOG4"; then
