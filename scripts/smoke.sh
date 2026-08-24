@@ -86,8 +86,14 @@ fi
 # closes the pipe as soon as it has its line, and the write still in flight
 # then fails with EPIPE — which Node throws by default. See I-32.
 if npx tsx src/cli.tsx test/fixtures/large.md 2>"$STATE/epipe.err" | head -1 >/dev/null; then
-  if [ -s "$STATE/epipe.err" ]; then
-    bad "composes with head without an EPIPE trace (I-32)"
+  # What the check is named for is a trace, not silence. Requiring stderr to
+  # be empty made it a test of whatever else shares the stream: the release
+  # job installs npm@latest, whose `npm notice run …` and a warning about a
+  # config it does not recognise both go to stderr, and the check failed there
+  # while passing everywhere else. npm's own chatter is filtered; anything the
+  # viewer says is still a failure. 
+  if grep -qav '^npm \(notice\|warn\|WARN\)' "$STATE/epipe.err"; then
+    bad "composes with head without an EPIPE trace (I-32): $(grep -av '^npm \(notice\|warn\|WARN\)' "$STATE/epipe.err" | head -2 | tr '\n' ' ')"
   else
     ok "composes with head without an EPIPE trace (I-32)"
   fi
