@@ -48,6 +48,17 @@ the thing it named was broken.
   exactly right — and it fails as "the message was wrong", which sends you
   looking in the wrong place. Capture first, match after:
   `out=$(cmd 2>&1 >/dev/null); case $out in *"$want"*) ok;; esac`.
+- **On the GitHub macOS runner the typescript cannot be read while the run is
+  in progress**, `script -F` notwithstanding. Measured: the alternate-screen
+  sequence was found in zero seconds and the document's own heading was still
+  missing 84 seconds later, in a file that ends up holding the whole session.
+  Every `await` there is a delay wearing a marker's clothes, and most checks
+  pass anyway because the greps that decide them run after the pipeline ends.
+  The exception is a check whose *keystroke timing* is load bearing — that one
+  must drive rather than watch: send the keys again on a schedule until the
+  effect appears, so a slow start costs another attempt instead of the run.
+  Pass -F regardless; it is what makes the polling work everywhere else, and it
+  took the whole script from five minutes to thirty seconds.
 - **A concurrent wait must outlast everything the driver waits for.** A check
   whose driver block polls for the mount and then for content, while the
   assertion polls for the result on a shorter budget, kills the run before the
