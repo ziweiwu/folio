@@ -988,3 +988,64 @@ describe('a search says where you are in it', () => {
     app.unmount();
   });
 });
+
+/** An `open` that gets as far as reading and is then refused by the filesystem. */
+const denied = async () => {
+  throw new Error("EACCES: permission denied, open '/x/secret.md'");
+};
+
+describe('I-34 Enter is Enter however the terminal spells it', () => {
+  /* Ink calls `\r` a return and a lone `\n` an *enter*, and only the first
+     sets `key.return` — the second arrives with every flag false and its input
+     blanked. A pty whose line discipline translates CR to NL, which is what a
+     terminal does until raw mode turns it off, therefore delivered an Enter
+     this app matched against nothing and silently dropped. It cost a CI run
+     that reported the viewer as saying nothing when it had in fact been asked
+     nothing: Tab selects a link without a word, so a dead Enter after it
+     produces no message at all, which is the one outcome that looks like the
+     app being broken rather than the keystroke being lost. */
+  const LINKED = '# Main\n\nGo to [secret](./secret.md) now.\n';
+
+  it.each([
+    ['a carriage return', '\r'],
+    ['a newline', '\n'],
+  ])('I-34 follows a picked link on %s', async (_what, enter) => {
+    const app = mount({ initial: { text: LINKED }, open: denied });
+    await settle();
+    app.stdin.write('\t');
+    await settle();
+    app.stdin.write(enter);
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('permission denied');
+    app.unmount();
+  }, 30_000);
+
+  it.each([
+    ['a carriage return', '\r'],
+    ['a newline', '\n'],
+  ])('I-34 commits a typed query on %s', async (_what, enter) => {
+    const app = mount({ initial: { text: SECTIONS } });
+    await settle();
+    app.stdin.write('/');
+    await settle();
+    app.stdin.write('prose');
+    await settle();
+    app.stdin.write(enter);
+    await settle();
+    // Committed, so the prompt is gone and the match count is reported.
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('of ');
+    expect(frame).not.toContain('/prose▏');
+    app.unmount();
+  }, 30_000);
+
+  it('I-34 still reports nothing to follow when no link is picked', async () => {
+    // The newline must mean Enter, not be swallowed into meaning nothing.
+    const app = mount({ initial: { text: LINKED }, open: denied });
+    await settle();
+    app.stdin.write('\n');
+    await settle();
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('press tab to pick a link first');
+    app.unmount();
+  });
+});
