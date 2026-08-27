@@ -129,6 +129,31 @@ describe('wikilinks', () => {
     const doc3 = layoutDoc('[[]] stays\n', opts({ level: 0 }));
     expect(doc3.lines[0]!.plain).toContain('[[]]');
   });
+
+  it('I-40 finds a wikilink far past the hint window', () => {
+    /* The hint `marked` is given looks only a few thousand characters ahead,
+       because scanning the rest of the document on every inline token is
+       quadratic. A wikilink beyond that must still resolve: "no hint" is what
+       this returned anyway whenever no wikilink was left, and `marked` asks
+       again after each token, so the window catches up to it. */
+    const far = 'a '.repeat(40_000) + '[[far-away|the label]] tail';
+    const beyondWindow = layoutDoc(far, opts({ level: 0 }));
+    expect(far.indexOf('[['), 'the link must be well past the window').toBeGreaterThan(4096);
+    expect(beyondWindow.lines.flatMap((l) => l.links ?? []).map((t) => t.href)).toContain('far-away');
+    expect(beyondWindow.lines.map((l) => l.plain).join('\n')).toContain('the label');
+  });
+
+  it('I-40 lays out a document with no wikilink in it in bounded time', () => {
+    /* `![` repeated is the worst case for the hint, because it never contains
+       `[[` at all, so an unbounded scan ran to the end of the document on every
+       one of its inline tokens: 40,000 of them took 15 s against 40 ms with the
+       extension off. Deliberately loose — what this forbids is the quadratic,
+       which is seconds to minutes, not the linear, which is milliseconds. */
+    const started = Date.now();
+    const noWikilinkAtAll = layoutDoc('!['.repeat(40_000), opts({ level: 0 }));
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(noWikilinkAtAll.lines.length).toBeGreaterThan(0);
+  });
 });
 
 describe('the example documents stay a working tour', () => {

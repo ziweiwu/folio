@@ -5,6 +5,7 @@ import { stripAnsi } from '../src/core/ansi.js';
 import { parseArgs } from '../src/core/options.js';
 import { pickTheme } from '../src/ui/theme.js';
 import { isMouseSequence } from '../src/hooks/useMouse.js';
+import { tooHostileToParse } from '../src/md/text.js';
 
 /**
  * The few behaviours that only exist once the component is running.
@@ -19,6 +20,9 @@ const theme = pickTheme('dark');
 const parsed = parseArgs([]);
 if (!parsed.ok) throw new Error(parsed.message);
 const options = parsed.options;
+/** What `reload` resolves with: the bytes, and whether they are still markdown. */
+type Reloaded = { source: Source; markdown: boolean };
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Let pending promises and the render they trigger both run to completion. */
@@ -199,12 +203,12 @@ describe('I-33 a navigation invalidates work started before it', () => {
     /* The generation orders reloads against each other, but nothing invalidated
        one against the reader moving on — so a reload started on A and resolving
        after a link to B replaced B with A's text, under a "reloaded" note. */
-    const pending: Array<(s: Source) => void> = [];
+    const pending: Array<(s: Reloaded) => void> = [];
     let fire: (() => void) | null = null;
     const app = mount({
       initial: { text: LINKED },
       open: openGuide,
-      reload: () => new Promise<Source>((resolve) => pending.push(resolve)),
+      reload: () => new Promise<Reloaded>((resolve) => pending.push(resolve)),
       watch: (onChange) => {
         fire = onChange;
         return () => {};
@@ -223,7 +227,7 @@ describe('I-33 a navigation invalidates work started before it', () => {
     expect(stripAnsi(app.lastFrame() ?? '')).toContain('Guide');
 
     // The read of A lands only now, with B on screen.
-    pending[0]!({ text: '# A\n\nA reloaded from disk\n' });
+    pending[0]!({ source: { text: '# A\n\nA reloaded from disk\n' }, markdown: true });
     await settle();
 
     const frame = stripAnsi(app.lastFrame() ?? '');
@@ -268,8 +272,8 @@ describe('I-33 only the newest reload may change the document', () => {
        The reads are resolved by hand rather than by racing timers, so the
        ordering under test is the one written here and not one the machine's
        load decided. */
-    const pending: Array<(s: Source) => void> = [];
-    const reload = () => new Promise<Source>((resolve) => pending.push(resolve));
+    const pending: Array<(s: Reloaded) => void> = [];
+    const reload = () => new Promise<Reloaded>((resolve) => pending.push(resolve));
 
     let fire: (() => void) | null = null;
     const app = mount({
@@ -288,11 +292,11 @@ describe('I-33 only the newest reload may change the document', () => {
     expect(pending, 'three changes should have started three reads').toHaveLength(3);
 
     // The newest read finishes first, the oldest last — the losing order.
-    pending[2]!({ text: '# Start\n\nv3 final\n' });
+    pending[2]!({ source: { text: '# Start\n\nv3 final\n' }, markdown: true });
     await settle();
-    pending[1]!({ text: '# Start\n\nv2\n' });
+    pending[1]!({ source: { text: '# Start\n\nv2\n' }, markdown: true });
     await settle();
-    pending[0]!({ text: '# Start\n\nv1 slow\n' });
+    pending[0]!({ source: { text: '# Start\n\nv1 slow\n' }, markdown: true });
     await settle();
 
     const frame = app.lastFrame() ?? '';
@@ -310,12 +314,41 @@ describe('I-33 only the newest reload may change the document', () => {
         fire = onChange;
         return () => {};
       },
-      reload: async (): Promise<Source> => ({ text: `# Start\n\nreloaded ${++call}\n` }),
+      reload: async (): Promise<Reloaded> => ({ source: { text: `# Start\n\nreloaded ${++call}\n` }, markdown: true }),
     });
     await sleep(50);
     fire!();
     await sleep(200);
     expect(app.lastFrame() ?? '').toContain('reloaded 1');
+    app.unmount();
+  });
+
+  it('I-40 survives a file edited into an attack while it is being read', async () => {
+    /* A document is untrusted on every read, not only the first. `r` re-reads
+       whatever is on disk now and `--watch` exists because that changes under
+       the reader, but reload handed its bytes straight to `layoutDoc` with no
+       guard: reloading onto 1,500 levels of quotation collapsed the frame to a
+       single newline — the blank screen I-31 exists to prevent, on the one path
+       it does not cover. The verdict travels with the text, so it is honoured
+       here exactly as it is on open. */
+    const hostile = '> '.repeat(1500) + 'hi';
+    expect(tooHostileToParse(hostile), 'the guard must refuse this').toBe(true);
+
+    const app = mount({
+      watch: (onChange) => {
+        onChange();
+        return () => {};
+      },
+      reload: async (): Promise<Reloaded> => ({
+        source: { text: hostile },
+        markdown: !tooHostileToParse(hostile),
+      }),
+    });
+    await sleep(200);
+    const frame = app.lastFrame() ?? '';
+    // Verbatim, which loses no text — not a blank frame, and not a crash.
+    expect(frame.trim().length, 'the viewer must still be drawing').toBeGreaterThan(0);
+    expect(frame).toContain('>');
     app.unmount();
   });
 
@@ -325,7 +358,7 @@ describe('I-33 only the newest reload may change the document', () => {
         onChange();
         return () => {};
       },
-      reload: async (): Promise<Source> => {
+      reload: async (): Promise<Reloaded> => {
         throw new Error('gone');
       },
     });

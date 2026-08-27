@@ -9,10 +9,28 @@ import type { Tokens } from 'marked';
  * read in a terminal. Emitting a plain `link` token means everything
  * downstream — styling, OSC 8, following — treats it like any other link.
  */
+/** How far ahead a wikilink hint looks. See `start` below. */
+const WIKILINK_HINT = 4096;
+
 const wikilink = {
   name: 'wikilink',
   level: 'inline' as const,
-  start: (src: string) => src.indexOf('[['),
+  /* A hint, not an answer. `marked` calls this once per inline token, handing
+     it everything left in the document each time, and scanning all of that on
+     every call is quadratic in a document with many inline tokens and no
+     wikilink in it: `![` repeated is the worst case, because it never contains
+     `[[` at all, so every call scanned to the end and found nothing. 40,000 of
+     them took 15 s against 40 ms with the extension off, and 160,000 took four
+     minutes — during which the parse is one synchronous call, so the viewer is
+     already on the alternate screen and cannot answer Ctrl-C (I-7). Bounded,
+     the cost per call is a constant.
+
+     A `[[` past the window is not lost. Returning -1 says "no hint", which is
+     what this already returned whenever there was no wikilink left; `marked`
+     then advances by one inline token and asks again, so the window reaches
+     any real wikilink once the remainder is short enough. The slice is free —
+     V8 shares the backing string rather than copying it. */
+  start: (src: string) => src.slice(0, WIKILINK_HINT).indexOf('[['),
   tokenizer(src: string) {
     const m = /^\[\[([^\]|#]*)(#[^\]|]+)?(?:\|([^\]]+))?\]\]/.exec(src);
     if (!m) return undefined;

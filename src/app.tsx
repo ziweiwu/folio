@@ -32,8 +32,10 @@ export type AppProps = {
   theme: Theme;
   level: ColorLevel;
   mouse: boolean;
-  /** Re-read the file, rebuilding the highlighter for any new languages. */
-  reload?: () => Promise<Source>;
+  /** Re-read the file, rebuilding the highlighter for any new languages.
+   *  Carries its own verdict on whether the bytes now on disk are markdown:
+   *  a file can be edited past the I-40 guard, or back inside it. */
+  reload?: () => Promise<{ source: Source; markdown: boolean }>;
   /** Subscribe to changes on disk; returns an unsubscribe. Used by --watch. */
   watch?: (onChange: () => void) => () => void;
   /**
@@ -497,7 +499,8 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     try {
       const next = await reload();
       if (generation !== reloadGeneration.current || nav !== navGeneration.current) return;
-      setSource(next);
+      setSource(next.source);
+      setParseAsMarkdown(next.markdown);
       setStatus('reloaded');
     } catch (err) {
       if (generation !== reloadGeneration.current || nav !== navGeneration.current) return;

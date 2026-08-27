@@ -146,7 +146,7 @@ export function looksBinary(text: string): boolean {
 }
 
 /**
- * Levels of list nesting past which a file is not a document.
+ * Columns of indentation past which a file is not a document.
  *
  * Markdown nests a list one level per indent step, and `marked`'s lexer costs
  * O(depth²) to work out how deep a run of them goes: 800 levels take 125 ms,
@@ -155,28 +155,139 @@ export function looksBinary(text: string): boolean {
  * A markdown file is untrusted input (I-29) — it arrives from a repository, a
  * download, a pipe — so a crafted one must not be able to kill the viewer.
  *
- * The bound is on indentation because that is what drives the nesting, and it
- * is set far above anything a person writes: eight levels of list is already
- * unreadable, and this allows two hundred and fifty-six. See I-40.
+ * This bound is on indentation, and it is set far above anything a person
+ * writes: eight levels of list is already unreadable, and this allows two
+ * hundred and fifty-six. Counted in *columns*, because that is the unit
+ * markdown nests in and a tab is worth up to four of them — measured against a
+ * stack a third of the usual size, 256 tab-indented levels still overflowed
+ * while 256 columns of spaces did not, so counting characters was reading the
+ * wrong number. See I-40.
  */
 const MAX_LIST_INDENT = 256;
+
+/** Where markdown puts its tab stops when it measures an indent. */
+const TAB_STOP = 4;
+
+/** What a run of leading whitespace is worth, in columns. */
+function indentColumns(whitespace: string): number {
+  let columns = 0;
+  for (const ch of whitespace) columns += ch === '\t' ? TAB_STOP - (columns % TAB_STOP) : 1;
+  return columns;
+}
+
+/**
+ * Block markers one line may open before the file is not a document.
+ *
+ * Indentation is not the only thing that nests, which the bound above assumed
+ * for as long as it was the only one. A line opens a level per marker it
+ * carries, and markers chain along a single line needing no indentation at
+ * all: `> > > …`, `1. 1. 1. …` and `> 1. > 1. …` each nest as deep as they are
+ * long. The indent bound never saw any of them — its regex captures the
+ * leading whitespace, which in all three is empty — so all three reached the
+ * parser and overflowed a stack, at 1,060 levels of quotation, 796 of chained
+ * list marker, and 904 of the two alternating — all three counted in levels,
+ * which is what this bounds. Counted instead in repetitions of the chain, the
+ * last of those reads 452 and looks like half the margin it is, because each
+ * repetition opens two levels. Quotation overflows
+ * this viewer's own layout rather than `marked`'s lexer, because `renderQuote`
+ * recurses once per level too; the file that does it is 3 KB.
+ *
+ * Sixty-four is twelve times below the shallowest of those crashes, measured
+ * in the levels this counts rather than in repetitions of a chain that opens
+ * two at a time. The margin has to be a measured one, because where a stack
+ * ends is a property of the machine and not of the document: on the smallest
+ * stack the app can start under at all it narrows to 11.7x, and it cannot be
+ * checked below that, because under roughly 700 KB Ink's own WASM fails to
+ * load before any document is read. Sixty-four is also far above anything
+ * anyone writes — three levels of quotation is already hard to follow.
+ */
+const MAX_BLOCK_DEPTH = 64;
+
+/**
+ * Emphasis delimiters in a row past which a line is not prose.
+ *
+ * `marked` masks punctuation across the whole inline string before it pairs
+ * emphasis up, and one unbroken run of `*` or `_` overflows the stack inside
+ * that pass at around five thousand. It has to be a single run of a single
+ * character: ten thousand asterisks scattered through a paragraph, or
+ * alternating with underscores, both parse fine — so the bound is on the run
+ * and not on the count. Two hundred and fifty-six is twenty times below the
+ * crash and well above a row of asterisks used as a divider.
+ */
+const MAX_DELIMITER_RUN = 256;
 
 /** A line that opens a list item, and how far it is indented. */
 const LIST_ITEM = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]/;
 
 /**
- * True for a document whose list nesting is deep enough to be an attack
- * rather than a document. Shown verbatim instead, which loses no text.
+ * One block marker, and the gap before it, matched where the last one ended.
+ *
+ * Sticky rather than anchored so a run can be counted in one pass: a loop that
+ * re-anchored against the remainder would re-scan what it had already read.
+ *
+ * The gap is greedy, and the first version of this bounded it at five columns
+ * on the reasoning that markdown allows a marker at most four spaces of indent
+ * before the content becomes a code block instead. Both halves of that were
+ * wrong. The rule is real but it is measured from the *content column of the
+ * enclosing container*, not from the start of the line, so three levels of list
+ * put a chained run at column six where a bounded gap could not see it at all —
+ * every one of the families below walked straight back in behind one wide
+ * ordered marker, in a file of 3 KB. And the performance it was bought for does
+ * not exist: a sticky match fails once at a fixed position rather than once per
+ * position, so a greedy gap backtracks across the line a single time. Measured
+ * on a line of 200,000 spaces it costs 0.6 ms, and on 400,000 it costs 1.2 ms —
+ * linear, which is what a document is allowed to cost.
+ *
+ * So this counts every marker on the line and does not ask whether markdown
+ * would nest each one. Over-counting is the safe direction: the answer to a
+ * line built out of markers is to show the file verbatim, which loses no text,
+ * and a line that markdown *would* nest to depth D necessarily carries D
+ * markers to open them with. Indentation is the one thing that opens a level
+ * without a marker of its own, which is what the bound above is for.
+ */
+const BLOCK_MARKER = /[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])[ \t])/y;
+
+/** How many block levels a single line opens. */
+function blockDepth(line: string): number {
+  BLOCK_MARKER.lastIndex = 0;
+  let depth = 0;
+  // Every match consumes its marker at least, so this always reaches the end.
+  while (BLOCK_MARKER.exec(line) !== null) depth += 1;
+  return depth;
+}
+
+/** True for a run of `*` or `_` longer than the inline pass survives. */
+function runsLongOnDelimiters(line: string): boolean {
+  /* A run cannot outlast the line that holds it, and almost every line in a
+     real document is shorter than the bound, so the scan below is paid for
+     only where a run long enough to matter could exist at all. */
+  if (line.length <= MAX_DELIMITER_RUN) return false;
+
+  let previous = '';
+  let run = 0;
+  for (const ch of line) {
+    run = ch === previous ? run + 1 : 1;
+    previous = ch;
+    if (run > MAX_DELIMITER_RUN && (ch === '*' || ch === '_')) return true;
+  }
+  return false;
+}
+
+/**
+ * True for a document built to abort the parser rather than to be read.
+ * Shown verbatim instead, which loses no text.
  *
  * A fenced code block containing a line indented past the bound is the one
  * false positive, and it is the right way round: the cost of being wrong here
  * is a file shown as plain text, and the cost of being wrong the other way is
  * the process aborting on a file the reader merely opened. See I-40.
  */
-export function nestsTooDeeply(src: string): boolean {
+export function tooHostileToParse(src: string): boolean {
   for (const line of src.split('\n')) {
-    const m = LIST_ITEM.exec(line);
-    if (m && m[1]!.length > MAX_LIST_INDENT) return true;
+    const indented = LIST_ITEM.exec(line);
+    if (indented && indentColumns(indented[1]!) > MAX_LIST_INDENT) return true;
+    if (blockDepth(line) > MAX_BLOCK_DEPTH) return true;
+    if (runsLongOnDelimiters(line)) return true;
   }
   return false;
 }

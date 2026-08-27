@@ -8,7 +8,7 @@ import { render } from 'ink';
 import { ansiWidth, detectColorLevel, paint, sliceAnsi, type ColorLevel } from './core/ansi.js';
 import { parseArgs, type Options } from './core/options.js';
 import { layoutDoc } from './md/layout.js';
-import { isMarkdownPath, layoutText, looksBinary, nestsTooDeeply } from './md/text.js';
+import { isMarkdownPath, layoutText, looksBinary, tooHostileToParse } from './md/text.js';
 import { collectLanguages, createHighlighter } from './md/highlight.js';
 import { EMPTY, parsePositions, recall, remember, type Positions } from './core/positions.js';
 import { sanitizeLine } from './core/sanitize.js';
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
      not a preference about how to show a file but a refusal to hand the parser
      an input that would abort the process before anything could be drawn. See
      I-40. */
-  const markdown = (options.markdown ?? isMarkdownPath(options.file)) && !nestsTooDeeply(text);
+  const markdown = (options.markdown ?? isMarkdownPath(options.file)) && !tooHostileToParse(text);
 
   /* Colour is off when writing to a pipe, so `viewer x.md | cat` stays clean;
      FORCE_COLOR overrides that for `| less -R`. See I-11. */
@@ -343,9 +343,24 @@ async function main(): Promise<void> {
   /* Reloads the document *being read*, not the one the process was started on.
      After following a link, `r` re-read the original file and put its text on
      screen under the other file's name. */
+  /* Re-read through the same guard the file was opened through. A document is
+     untrusted on every read, not only the first (I-29): `r` re-reads whatever
+     is on disk now, and `--watch` exists precisely because that changes while
+     the reader is looking at it, so a file edited into an attack after it was
+     opened reached `layoutDoc` with nothing in the way. It took the viewer down
+     to a blank frame rather than the message I-31 promises. The verdict travels
+     with the text because it can change in either direction — a file refused at
+     open and then edited into ordinary markdown has to be able to come back. */
   const reload = options.file === null
     ? undefined
-    : async (): Promise<Source> => makeSource(readFileSync(currentFile!, 'utf8'), theme.shiki, level);
+    : async (): Promise<{ source: Source; markdown: boolean }> => {
+        const body = readFileSync(currentFile!, 'utf8');
+        const asMarkdown = (options.markdown ?? isMarkdownPath(currentFile)) && !tooHostileToParse(body);
+        return {
+          source: asMarkdown ? await makeSource(body, theme.shiki, level) : { text: body },
+          markdown: asMarkdown,
+        };
+      };
 
   const watch = options.watch && options.file !== null
     ? (onChange: () => void) => {
@@ -379,7 +394,7 @@ async function main(): Promise<void> {
            file stats perfectly well. Nothing below this line runs unless the
            read worked, so a failure leaves the viewer exactly where it was. */
         const body = readFileSync(found, 'utf8');
-        const asMarkdown = (options.markdown ?? isMarkdownPath(found)) && !nestsTooDeeply(body);
+        const asMarkdown = (options.markdown ?? isMarkdownPath(found)) && !tooHostileToParse(body);
         if (currentFile !== null) {
           positions.entries[currentFile] = { block: currentBlock, at: Date.now() };
           trail.push({ dir: currentDir!, file: currentFile });

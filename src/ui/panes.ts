@@ -188,7 +188,16 @@ export function helpPane(width: number, height: number, theme: Theme, level: Col
     body.push(paint(truncate('  …  folio --help lists them all', inner), { ...theme.faint, bg: theme.overlayBg }, level));
   }
 
-  return frame('Keys', body, paneWidth, height, theme, level);
+  /* The way out goes in the title, which is the one part of this pane that
+     always survives. `q` quits the app rather than the pane and every other
+     key merely closes it, so a reader who opens `?` has nothing to go on but
+     convention. Written into a key row instead, it was truncated to "any key
+     closes …" at 52 columns and dropped altogether whenever the list was
+     clipped for height — which is the short terminal where being stuck in a
+     full-screen pane is most likely. The head row is drawn at every size.
+     It also settles the one row below that is false while this pane is up:
+     `esc` is listed as quitting, and here it closes. */
+  return frame('Keys — any key closes', body, paneWidth, height, theme, level);
 }
 
 /** The search prompt, which replaces the status bar while typing. */

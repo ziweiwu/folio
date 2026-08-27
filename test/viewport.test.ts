@@ -9,7 +9,7 @@ import { composeFrame, scrollPercent, scrollbar, sectionAt, statusBar } from '..
 import { centre, overlayRows } from '../src/ui/overlay.js';
 import { helpPane, tocPane } from '../src/ui/panes.js';
 import { layoutDoc } from '../src/md/layout.js';
-import { isMarkdownPath, layoutText, looksBinary, nestsTooDeeply } from '../src/md/text.js';
+import { isMarkdownPath, layoutText, looksBinary, tooHostileToParse } from '../src/md/text.js';
 import { pickTheme } from '../src/ui/theme.js';
 import { fixture, opts } from './helpers.js';
 
@@ -764,17 +764,102 @@ describe('formats this viewer does not parse', () => {
       /* `marked` is O(depth²) here: 1,600 levels take the best part of a
          second and 5,000 abort the process outright, which no `try`/`catch`
          can see because the parse is one synchronous call. */
-      expect(nestsTooDeeply(nest(5000))).toBe(true);
+      expect(tooHostileToParse(nest(5000))).toBe(true);
       // Far above anything a person writes, so ordinary documents are untouched.
-      expect(nestsTooDeeply(nest(40))).toBe(false);
-      expect(nestsTooDeeply(fixture('kitchen-sink.md'))).toBe(false);
-      expect(nestsTooDeeply('')).toBe(false);
+      expect(tooHostileToParse(nest(40))).toBe(false);
+      expect(tooHostileToParse(fixture('kitchen-sink.md'))).toBe(false);
+      expect(tooHostileToParse('')).toBe(false);
       // Ordered lists nest the same way, and are bounded the same way.
       const ordered = Array.from({ length: 400 }, (_, i) => ' '.repeat(i) + `${i + 1}. item`).join('\n');
-      expect(nestsTooDeeply(ordered)).toBe(true);
+      expect(tooHostileToParse(ordered)).toBe(true);
       /* Indentation on its own is not the trigger — only a line that *opens a
          list item* can nest, so an indented paragraph is left alone. */
-      expect(nestsTooDeeply(' '.repeat(400) + 'just some deeply indented prose')).toBe(false);
+      expect(tooHostileToParse(' '.repeat(400) + 'just some deeply indented prose')).toBe(false);
+    });
+
+    it('I-40 refuses the nesting that carries no indentation at all', () => {
+      /* Every one of these reached the parser while the guard looked only at
+         leading whitespace, and every one of them overflowed a stack: the
+         markers chain along one line and each opens a level, so the thing that
+         drives the nesting is the marker and not the indent. Measured, the
+         shallowest crash of the three is around five hundred levels. */
+      expect(tooHostileToParse('> '.repeat(1500) + 'hi')).toBe(true);
+      expect(tooHostileToParse('>'.repeat(1500) + 'hi')).toBe(true);
+      expect(tooHostileToParse('1. '.repeat(1500) + 'hi')).toBe(true);
+      expect(tooHostileToParse('+ '.repeat(1500) + 'hi')).toBe(true);
+      expect(tooHostileToParse('> 1. '.repeat(700) + 'hi')).toBe(true);
+      // A marker still nests across the widest gap markdown allows it (four).
+      expect(tooHostileToParse('>    '.repeat(1500) + 'hi')).toBe(true);
+      expect(tooHostileToParse('>\t'.repeat(1500) + 'hi')).toBe(true);
+
+      /* And the bound stays far above quotation anyone writes. Three levels is
+         already hard to follow; these render, rather than being refused. */
+      expect(tooHostileToParse('> '.repeat(64) + 'hi')).toBe(false);
+      expect(tooHostileToParse('> > > deeply quoted, but a document')).toBe(false);
+      expect(tooHostileToParse(fixture('kitchen-sink.md'))).toBe(false);
+    });
+
+    it('I-40 counts markers wherever the line starts, not only at column zero', () => {
+      /* The first bound here allowed five columns before a marker, because
+         markdown allows a marker at most four spaces of indent. The rule is
+         real, but it is measured from the content column of the container the
+         line is *inside*, so every family above walked back in behind anything
+         that moved that column right — three levels of list, or one wide
+         ordered marker. All 24 combinations of container and chain crashed. */
+      const chains = ['> ', '1. ', '+ ', '> 1. '];
+      const containers: Array<[string, number]> = [
+        ['', 0],
+        ['- a\n  - b\n    - c\n', 6],
+        ['- a\n  - b\n    - c\n      - d\n', 8],
+        ['123456789. a\n', 11],
+        ['> - a\n>   - b\n', 6],
+        ['- a\n\t- b\n', 8],
+      ];
+      for (const [prefix, column] of containers) {
+        for (const chain of chains) {
+          const src = prefix + ' '.repeat(column) + chain.repeat(1500) + 'hi';
+          expect(tooHostileToParse(src), `${chain.trim()} at column ${column}`).toBe(true);
+        }
+      }
+    });
+
+    it('I-40 measures indentation in columns, because a tab is worth four', () => {
+      /* Counted in characters, 256 tabs passed the bound and still overflowed a
+         stack a third of the usual size — the number being read was not the
+         number that nests. */
+      expect(tooHostileToParse('\t'.repeat(256) + '- deep')).toBe(true);
+      expect(tooHostileToParse(' '.repeat(257) + '- deep')).toBe(true);
+      // And an ordinary tab-indented list is still a document.
+      expect(tooHostileToParse('- a\n\t- b\n\t\t- c')).toBe(false);
+    });
+
+    it('I-40 refuses an emphasis run long enough to overflow the inline pass', () => {
+      /* `marked` masks punctuation across the whole inline string before it
+         pairs emphasis, and one unbroken run overflows the stack inside that
+         pass at around five thousand. */
+      expect(tooHostileToParse('*'.repeat(5000) + 'a' + '*'.repeat(5000))).toBe(true);
+      expect(tooHostileToParse('_'.repeat(5000) + 'a' + '_'.repeat(5000))).toBe(true);
+
+      /* The run is what costs, not the count: both of these carry ten thousand
+         delimiters and both parse fine, so neither is refused. */
+      expect(tooHostileToParse('*a*'.repeat(5000))).toBe(false);
+      expect(tooHostileToParse('*_'.repeat(3000) + 'a' + '_*'.repeat(3000))).toBe(false);
+      // Well above a row of asterisks used as a divider.
+      expect(tooHostileToParse('*'.repeat(256) + 'a' + '*'.repeat(256))).toBe(false);
+    });
+
+    it('I-40 costs no more to refuse a document than to read one', () => {
+      /* The guard runs before anything is drawn, on every document, so a line
+         built to make *it* quadratic would defeat the point of having it. Both
+         of these did: a re-anchored scan of a line that is all markers, and a
+         greedy whitespace match backtracking a position at a time down a line
+         that is all spaces. Deliberately loose — what this forbids is the
+         quadratic, which is seconds, not the linear, which is milliseconds. */
+      const started = Date.now();
+      expect(tooHostileToParse('>'.repeat(200_000))).toBe(true);
+      expect(tooHostileToParse(' '.repeat(200_000) + 'x')).toBe(false);
+      expect(tooHostileToParse('a'.repeat(200_000))).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1000);
     });
 
     it('I-40 lays the pathological document out in bounded time', () => {

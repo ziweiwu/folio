@@ -178,6 +178,46 @@ fi
 # And --markdown cannot force the parse that would abort.
 want "--markdown cannot override the nesting guard (I-40)" 0 $RUN --plain --markdown "$NEST_DOC"
 
+# Nesting needs no indentation to be deep. Markers chain along a single line —
+# quotation, list markers, and the two alternating — and each one opens a level,
+# so these walked past a guard that read leading whitespace alone and overflowed
+# a stack. Checked at the exit status for the same reason as above: a stack
+# overflow is a raw RangeError on stderr, not anything `fail` would print.
+#
+# Indented as well as at column zero. The four-space rule that makes a marker
+# stop nesting is measured from the content column of the container the line is
+# inside, not from the start of the line, so a chain behind one wide ordered
+# marker sits at column 11 and walked straight back past the first version of
+# this guard. Checking only column zero passed while the class was open.
+CHAIN_DOC="$STATE/deepchain.md"
+for chain in '> ' '1. ' '> 1. '; do
+  python3 -c "
+import sys
+sys.stdout.write('123456789. a\n' + ' ' * 11 + '$chain' * 1500 + 'hi')
+" > "$CHAIN_DOC"
+  want "survives a chain indented inside a container (I-40)" 0 $RUN --plain "$CHAIN_DOC"
+
+  python3 -c "
+import sys
+sys.stdout.write('$chain' * 1500 + 'hi')
+" > "$CHAIN_DOC"
+  want "survives markers chained without indentation (I-40)" 0 $RUN --plain "$CHAIN_DOC"
+  if $RUN --plain "$CHAIN_DOC" </dev/null | grep -qa 'hi'; then
+    ok "keeps the text of it (I-40)"
+  else
+    bad "keeps the text of it (I-40)"
+  fi
+done
+
+# A single unbroken run of emphasis delimiters overflows the inline pass that
+# masks punctuation, which is not nesting and needed its own bound.
+RUN_DOC="$STATE/longrun.md"
+python3 -c "
+import sys
+sys.stdout.write('*' * 5000 + 'a' + '*' * 5000)
+" > "$RUN_DOC"
+want "survives an unbroken emphasis run (I-40)" 0 $RUN --plain "$RUN_DOC"
+
 # A flag that cannot be honoured is said out loud rather than dropped: without
 # a terminal there is nothing for --watch to redraw, and it used to be accepted
 # and silently ignored.
