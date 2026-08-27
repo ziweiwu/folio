@@ -6,6 +6,11 @@ import { decodeEntities } from '../src/md/inline.js';
 import { sanitizeLine, sanitizeSource } from '../src/core/sanitize.js';
 import { clusters, displayWidth, truncate, widest } from '../src/core/width.js';
 import { fixture, FIXTURES, opts } from './helpers.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+/** The example documents, which carry the widest character coverage there is. */
+const EXAMPLES = join(import.meta.dirname, '..', 'examples');
 
 const WIDTHS = [40, 60, 80, 100, 160, 200];
 
@@ -671,5 +676,45 @@ describe('I-41 a nested block keeps its place in what contains it', () => {
     const fence = bled.lines.find((l) => l.plain.includes('╭'))!;
     expect(leading(fence.plain)).toBeLessThan(55);
     expect(displayWidth(fence.plain)).toBeLessThanOrEqual(199);
+  });
+});
+
+/* `displayWidth` short-circuits a run of printable ASCII to its length, which
+   is what keeps it cheap enough to call once per row while a frame is composed.
+   Forcing the general path costs one wide character: `asciiWidth` gives up on
+   the first byte outside printable ASCII, and the prefix has to be two cells
+   rather than one, because U+FE0F widens the character before it only when
+   that character was one cell. */
+const viaGeneralPath = (text: string) => displayWidth(`\u4e2d${text}`) - 2;
+
+describe('I-2 the ASCII fast path agrees with the general one', () => {
+  it('measures plain ASCII the same either way', () => {
+    for (const text of ['', ' ', 'a', 'hello world', '~!@#$%^&*()', 'a'.repeat(500), '  indented  ']) {
+      expect(displayWidth(text), JSON.stringify(text)).toBe(viaGeneralPath(text));
+    }
+  });
+
+  it('does not take a shortcut on anything that is not plain ASCII', () => {
+    const awkward = ['\u4e2d', '\u26a0\ufe0f', '\ud83d\udc69\u200d\ud83d\udcbb', '\ud83d\udc4b\ud83c\udffd',
+      'e\u0301', '\ud83c\uddef\ud83c\uddf5', 'a\u0300b', 'tab\there', 'nul\u0000here',
+      /* DEL is the sharp one: it sits immediately above the printable range and
+         is *zero* cells, so a fast path that admitted one more character than
+         it should would measure it as one and nothing else here would notice. */
+      'del\u007fhere', '\u007f', '\u0080', '\u009f'];
+    for (const text of awkward) {
+      expect(displayWidth(text), JSON.stringify(text)).toBe(viaGeneralPath(text));
+    }
+  });
+
+  it('agrees on every line of every fixture and example', () => {
+    const files = [...FIXTURES.map((f) => fixture(f)), readFileSync(join(EXAMPLES, '07-unicode.md'), 'utf8')];
+    let compared = 0;
+    for (const source of files) {
+      for (const line of source.split('\n')) {
+        expect(displayWidth(line)).toBe(viaGeneralPath(line));
+        compared++;
+      }
+    }
+    expect(compared).toBeGreaterThan(500);
   });
 });

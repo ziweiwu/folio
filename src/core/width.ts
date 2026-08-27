@@ -64,6 +64,29 @@ function isZeroWidth(codePoint: number): boolean {
   );
 }
 
+/** Printable ASCII: one cell each, no marks, no joiners, no second cell. */
+const ASCII_LOW = 0x20;
+const ASCII_HIGH = 0x7e;
+
+/**
+ * The width of a run of plain ASCII, or -1 when it is not one.
+ *
+ * Nearly every line of nearly every document takes this path, and it earns its
+ * place: `displayWidth` runs once per row while a frame is composed, and the
+ * general form walks code points through an iterator with a range search per
+ * glyph. A `charCodeAt` loop that gives up on the first byte it cannot vouch
+ * for is several times cheaper, and for what it accepts the answer is simply
+ * the length. Every character it admits is one cell — no combining mark, no
+ * joiner, no variation selector and nothing wide lives below U+007F.
+ */
+function asciiWidth(text: string): number {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < ASCII_LOW || code > ASCII_HIGH) return -1;
+  }
+  return text.length;
+}
+
 /**
  * Terminal cells occupied by `s`.
  *
@@ -75,6 +98,9 @@ function isZeroWidth(codePoint: number): boolean {
  * reason. See I-2.
  */
 export function displayWidth(s: string): number {
+  const ascii = asciiWidth(s);
+  if (ascii >= 0) return ascii;
+
   let w = 0;
   let prevWidth = 0;
   /** True between a joiner and the glyph it swallows. */

@@ -782,7 +782,15 @@ describe('formats this viewer does not parse', () => {
       // Verbatim, which is what the guard falls back to, and which loses no text.
       const started = Date.now();
       const doc = layoutText(src, opts({ level: 0, width: 80 }));
-      expect(Date.now() - started).toBeLessThan(2000);
+      /* Deliberately loose. What this forbids is the unbounded case — the
+         parse that takes the best part of a second at 1,600 levels and aborts
+         the process outright at 5,000 — and that failure is orders of
+         magnitude, not a factor of two. The budget only has to be under it.
+         Set tight, it measured the runner instead of the code: this takes
+         ~680 ms on a developer's machine and a shared CI box is routinely
+         two to three times slower, so a 2,000 ms bar failed a release for a
+         reason that had nothing to do with what changed. */
+      expect(Date.now() - started).toBeLessThan(5000);
       expect(doc.lines.length).toBeGreaterThan(0);
       expect(doc.lines.some((l) => l.plain.includes('item4999'))).toBe(true);
     });
