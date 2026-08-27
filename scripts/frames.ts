@@ -56,6 +56,10 @@ export const SHOTS: Spec[] = [
   { id: 'contents', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 24, theme: 'dark', level: 3, overlay: 'toc' },
   { id: 'wide', file: 'test/fixtures/wide.md', cols: 92, rows: 18, theme: 'dark', level: 3, hOffset: 40 },
   { id: 'light', file: 'test/fixtures/kitchen-sink.md', cols: 92, rows: 26, theme: 'light', level: 3, scrollTo: 'Tables' },
+  /* The only shot on a terminal much wider than the text column, and the only
+     one that can catch I-41 regressing: every other `Spec` is 92 columns, where
+     the margin is one cell and a block bleeding into it changes nothing. */
+  { id: 'widescreen', file: 'test/fixtures/wide.md', cols: 200, rows: 18, theme: 'dark', level: 3 },
 ];
 
 export async function renderFrame(spec: Spec): Promise<{ rows: string[]; theme: Theme }> {

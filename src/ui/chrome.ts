@@ -1,6 +1,6 @@
 import { ansiWidth, padAnsi, paint, sliceAnsi, type ColorLevel } from '../core/ansi.js';
 import { displayWidth, truncate } from '../core/width.js';
-import type { Doc, Theme } from '../core/types.js';
+import type { Doc, Line, Theme } from '../core/types.js';
 
 /**
  * The frame around the document: scrollbar, status bar, and the slice of rows
@@ -221,9 +221,13 @@ export function composeFrame(
        would push the frame past its own width. */
     if (body >= 2) {
       if (line?.wide === true) {
-        // Honest edge markers: a row that continues past either edge says so,
-        // otherwise there is no way to tell that `l` would reveal anything.
-        if (h > 0) row = paint('‹', theme.faint, level) + sliceAnsi(row, 1, body);
+        /* Honest edge markers: a row that continues past either edge says so,
+           otherwise there is no way to tell that `l` would reveal anything.
+           A row with nothing on it gets no mark — a whole verbatim file is
+           flagged `wide` so that it pans as one thing, and a blank line inside
+           it has no content to the left however far the viewport has moved.
+           The mark claims only what is true of every case it is drawn in. */
+        if (h > 0 && full > 0) row = paint('‹', theme.faint, level) + sliceAnsi(row, 1, body);
         if (full > h + body) row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
       } else if (cut) {
         row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
@@ -232,6 +236,26 @@ export function composeFrame(
     rows.push(row + (bar[i] ?? ' '));
   }
   return rows;
+}
+
+/**
+ * True when a screen column is covered by an edge marker rather than by the row.
+ *
+ * `composeFrame` writes `‹` over the first cell and `›` over the last, so those
+ * two cells show the viewer's own chrome and not the document underneath. A
+ * click has to ask the same question or it follows whatever the marker is drawn
+ * over — including a one-cell link the reader cannot even see. Kept beside the
+ * code that draws them, and derived from the same three facts, so the two
+ * cannot drift apart. See I-42.
+ */
+export function isEdgeMarker(line: Line | undefined, column: number, width: number, hOffset: number): boolean {
+  const body = width - 1;
+  // Below two cells no marker is drawn at all: the row is already at the floor.
+  if (!line || body < 2) return false;
+  const h = line.wide === true ? hOffset : 0;
+  const full = ansiWidth(line.ansi);
+  if (line.wide === true && h > 0 && full > 0 && column === 0) return true;
+  return full > h + body && column === body - 1;
 }
 
 /** How far sideways the viewport may go, given the widest row on screen. */

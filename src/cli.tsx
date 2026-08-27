@@ -59,7 +59,7 @@ Keys
   n N          next, previous match
   t            contents          r            reload from disk
   ?            all keys          q esc ^C     quit
-  wheel        three lines
+  wheel        three lines       click        follow the link under it
 
 Examples
   folio README.md          read a file
@@ -76,6 +76,13 @@ Notes
   Colour follows the terminal's capabilities and NO_COLOR. Syntax highlighting
   loads only the grammars a document actually uses, so opening a file with no
   code blocks costs nothing.
+
+  Links to files are followed inside the viewer; links with a scheme are shown
+  in the status bar rather than opened, because a pager that launches a browser
+  is a surprise. Your terminal can still open those itself — they are marked as
+  hyperlinks unless --links says otherwise.
+
+  The full guide is at https://github.com/ziweiwu/folio/blob/main/docs/GUIDE.md
 `;
 
 function fail(message: string, code: 1 | 2): never {
@@ -401,7 +408,12 @@ async function main(): Promise<void> {
   const positions = options.resume && currentFile !== null ? loadPositions() : EMPTY;
   const startBlock = currentFile === null ? null : recall(positions, currentFile);
 
-  const mouse = level > 0;
+  /* Pointer input has nothing to do with colour. This was `level > 0`, which
+     made `--plain` and `NO_COLOR` — a preference about *colour* — silently
+     take the wheel and click away with it, on a terminal perfectly able to
+     report both. Everything past the `interactive` guard above already has a
+     terminal at each end, which is the only thing mouse reporting needs. */
+  const mouse = true;
   enterScreen(process.stdout, mouse);
   try {
     const app = render(

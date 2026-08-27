@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
 import { layoutDoc } from '../src/md/layout.js';
+import { layoutText } from '../src/md/text.js';
+import { decodeEntities } from '../src/md/inline.js';
 import { sanitizeLine, sanitizeSource } from '../src/core/sanitize.js';
-import { clusters, displayWidth, truncate } from '../src/core/width.js';
+import { clusters, displayWidth, truncate, widest } from '../src/core/width.js';
 import { fixture, FIXTURES, opts } from './helpers.js';
 
 const WIDTHS = [40, 60, 80, 100, 160, 200];
@@ -37,6 +39,38 @@ describe('I-2 layout measures in display cells, not code units', () => {
   it('I-2 counts a variation-selector emoji as two cells', () => {
     const doc = layoutDoc('⚠️ x', opts({ width: 40, maxWidth: 0 }));
     expect(ansiWidth(doc.lines[0]!.ansi)).toBe(2 + 2 + 1 + 1); // margin, emoji, space, x
+  });
+
+  it('I-2 counts a joined emoji sequence as one two-cell glyph', () => {
+    /* However many code points spell it. Counted per code point, a family is
+       eight cells and a developer four, so every table column holding one came
+       out ragged and every row carrying one measured wider than it drew. */
+    for (const emoji of ['👩‍💻', '👨‍👩‍👧‍👦', '🧑‍🤝‍🧑', '🏴‍☠️']) {
+      expect(displayWidth(emoji), emoji).toBe(2);
+    }
+  });
+
+  it('I-2 counts a skin tone as part of the emoji it recolours', () => {
+    expect(displayWidth('👋🏽')).toBe(2);
+    expect(displayWidth('👍🏻👍🏿')).toBe(4);
+  });
+
+  it('I-2 keeps a joined emoji whole when walking by cluster', () => {
+    for (const text of ['a👩‍💻b', '👨‍👩‍👧‍👦', '👋🏽 hi', '🏴‍☠️!']) {
+      const parts = [...clusters(text)];
+      // Nothing lost, and the parts measure what the whole does.
+      expect(parts.map(([c]) => c).join(''), text).toBe(text);
+      expect(parts.reduce((a, [, w]) => a + w, 0), text).toBe(displayWidth(text));
+    }
+    // The family is one cluster, not four.
+    expect([...clusters('👨‍👩‍👧‍👦')]).toHaveLength(1);
+  });
+
+  it('I-2 aligns a table whose cells hold joined emoji', () => {
+    const table = '| who | what |\n|---|---|\n| 👨‍👩‍👧‍👦 | family |\n| 👩‍💻 | dev |\n| ab | plain |\n';
+    const doc = layoutDoc(table, opts({ width: 79 }));
+    const widths = new Set(doc.lines.filter((l) => l.plain.includes('│')).map((l) => displayWidth(l.plain)));
+    expect(widths.size, 'every row of a table is the same width').toBe(1);
   });
 
   it('I-2 advances by cluster, so a mark cannot be counted apart from its base', () => {
@@ -422,5 +456,220 @@ describe('I-29 a document is content, never instructions', () => {
   it('I-29 does not turn a CRLF file into a wall of ^M', () => {
     const doc = layoutDoc('# T\r\n\r\none\r\ntwo\r\n', opts({ level: 0, overflow: 'wrap' }));
     expect(doc.lines.map((l) => l.plain).join('\n')).not.toContain('^M');
+  });
+});
+
+/** Cells of indentation before a row's first glyph. */
+const leading = (plain: string) => plain.length - plain.trimStart().length;
+
+const widestRow = (src: string, width: number) =>
+  Math.max(...layoutDoc(src, opts({ width, overflow: 'scroll' })).lines.map((l) => displayWidth(l.plain)));
+
+describe('I-41 wide blocks reclaim the centring margin', () => {
+  /* 120 cells of code against an 88-cell text column: wide enough that the
+     margin a 200-column terminal would give it is more than the block needs. */
+  const block = '```sh\n' + 'x'.repeat(120) + '\n```\n';
+
+  it('shows the whole block once the page is wide enough to hold it', () => {
+    // The block is 120 cells of code plus a 4-cell frame.
+    for (const width of [126, 160, 200, 300, 400]) {
+      expect(widestRow(block, width), `at ${width} columns`).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('never overruns the page further because the terminal got wider', () => {
+    // The regression itself: the margin grew with the terminal while the text
+    // column did not, so every extra column cost the reader a column of text.
+    let previous = Infinity;
+    for (const width of [100, 110, 120, 126, 160, 200, 300]) {
+      const overrun = Math.max(0, widestRow(block, width) - width);
+      expect(overrun, `at ${width} columns`).toBeLessThanOrEqual(previous);
+      previous = overrun;
+    }
+    expect(previous).toBe(0);
+  });
+
+  it('leaves a block that already fits aligned with the prose', () => {
+    const src = 'Some prose above the block.\n\n```sh\nshort\n```\n';
+    const doc = layoutDoc(src, opts({ width: 200, overflow: 'scroll' }));
+    const prose = doc.lines.find((l) => l.plain.includes('Some prose'))!;
+    const fence = doc.lines.find((l) => l.plain.includes('╭'))!;
+    expect(leading(fence.plain)).toBe(leading(prose.plain));
+  });
+
+  it('pulls a block back only as far as it needs', () => {
+    const wide = layoutDoc(block, opts({ width: 200, overflow: 'scroll' }));
+    const wider = layoutDoc('```sh\n' + 'x'.repeat(150) + '\n```\n', opts({ width: 200, overflow: 'scroll' }));
+    const indentOf = (rendered: ReturnType<typeof layoutDoc>) =>
+      leading(rendered.lines.find((l) => l.plain.includes('╭'))!.plain);
+    expect(indentOf(wider)).toBeLessThan(indentOf(wide));
+    expect(indentOf(wide)).toBeGreaterThan(0);
+  });
+
+  it('does not disturb wrap mode, where nothing exceeds the text column', () => {
+    for (const name of FIXTURES) {
+      const wrapped = layoutDoc(fixture(name), opts({ width: 200, overflow: 'wrap' }));
+      const longest = Math.max(0, ...wrapped.lines.map((l) => displayWidth(l.plain)));
+      expect(longest, name).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it('keeps structural indentation when a block inside a list bleeds', () => {
+    const src = '- item\n\n  ```sh\n  ' + 'y'.repeat(150) + '\n  ```\n';
+    const doc = layoutDoc(src, opts({ width: 200, overflow: 'scroll' }));
+    const fence = doc.lines.find((l) => l.plain.includes('╭'))!;
+    // The list's own indent survives: the fence is never flush against the edge.
+    expect(leading(fence.plain)).toBeGreaterThan(0);
+  });
+});
+
+describe('I-41 the text column caps prose, not the page', () => {
+  const CELL = 'The text column cap in columns; 0 fills the terminal instead of centring it';
+  const TABLE = `| option | what it does |\n|---|---|\n| \`-w N\` | ${CELL} |\n`;
+  const COMMAND = 'docker run --rm -it -v "$PWD:/work" --env FOO=bar ghcr.io/example/image:v1 sh -lc "echo hello"';
+
+  it('keeps a wide table\'s cells when wrapping on a terminal that has room', () => {
+    const doc = layoutDoc(TABLE, opts({ width: 299, maxWidth: 88, overflow: 'wrap' }));
+    expect(doc.lines.map((l) => l.plain).join('\n')).toContain(CELL);
+  });
+
+  it('still truncates that table when the terminal genuinely cannot hold it', () => {
+    const doc = layoutDoc(TABLE, opts({ width: 79, maxWidth: 88, overflow: 'wrap' }));
+    const body = doc.lines.map((l) => l.plain).join('\n');
+    expect(body).not.toContain(CELL);
+    expect(body).toContain('…');
+  });
+
+  it('keeps a wide code block on one row when wrapping on a wide terminal', () => {
+    const src = '```sh\n' + COMMAND + '\n```\n';
+    const wide = layoutDoc(src, opts({ width: 299, maxWidth: 88, overflow: 'wrap' }));
+    expect(wide.lines.filter((l) => l.plain.includes('docker run'))).toHaveLength(1);
+    // A short snippet still starts at the text column, so it lines up with prose.
+    const short = layoutDoc('```sh\nls\n```\n', opts({ width: 299, maxWidth: 88, overflow: 'wrap' }));
+    const fence = short.lines.find((l) => l.plain.includes('╭'))!;
+    expect(displayWidth(fence.plain.trim())).toBe(88);
+  });
+
+  it('never reflows a verbatim file the page has room for', () => {
+    const source = ['short', 'x'.repeat(150), 'y'.repeat(120)];
+    for (const width of [160, 200, 300, 400]) {
+      const doc = layoutText(source.join('\n'), opts({ width: width - 1, overflow: 'scroll' }));
+      expect(doc.lines, `at ${width} columns`).toHaveLength(source.length);
+    }
+  });
+
+  it('lets the viewport reach a verbatim file too wide for the page', () => {
+    const doc = layoutText('z'.repeat(150), opts({ width: 79, overflow: 'scroll' }));
+    expect(doc.lines.every((l) => l.wide === true)).toBe(true);
+  });
+
+  it('centres a verbatim file on its own width, not on the text column', () => {
+    const doc = layoutText('q'.repeat(176), opts({ width: 399, maxWidth: 88, overflow: 'scroll' }));
+    const row = doc.lines[0]!.plain;
+    const before = leading(row);
+    const after = 399 - displayWidth(row);
+    // Balanced to within a cell — an odd remainder has to land on one side.
+    expect(Math.abs(before - after)).toBeLessThanOrEqual(1);
+  });
+
+  it('leaves a narrow verbatim file where prose would sit', () => {
+    const doc = layoutText('note = 1', opts({ width: 399, maxWidth: 88, overflow: 'scroll' }));
+    const prose = layoutDoc('note = 1', opts({ width: 399, maxWidth: 88, overflow: 'scroll' }));
+    expect(leading(doc.lines[0]!.plain)).toBe(leading(prose.lines[0]!.plain));
+  });
+});
+
+describe('character references', () => {
+  it('decodes the named references a README actually uses', () => {
+    expect(decodeEntities('&copy; &reg; &trade; &deg; &rarr;')).toBe('© ® ™ ° →');
+    expect(decodeEntities('&amp; &lt; &gt; &quot; &apos;')).toBe('& < > " \'');
+  });
+
+  it('decodes numeric and hexadecimal references', () => {
+    expect(decodeEntities('&#8594; &#x2192;')).toBe('→ →');
+    expect(decodeEntities('&#128169;')).toBe('\u{1F4A9}');
+  });
+
+  it('I-29 refuses a reference that spells a control byte', () => {
+    /* The source is sanitised before anything parses it, so a reference
+       decoded here would slip past that guard and hand the document the
+       terminal again. Left as source text instead. */
+    for (const escape of ['&#27;', '&#x1b;', '&#7;', '&#0;', '&#127;', '&#x9f;']) {
+      expect(decodeEntities(escape), escape).toBe(escape);
+    }
+  });
+
+  it('refuses a surrogate or an out-of-range code point', () => {
+    expect(decodeEntities('&#xD800;')).toBe('&#xD800;');
+    expect(decodeEntities('&#1114112;')).toBe('&#1114112;');
+  });
+
+  it('leaves anything it does not know as the author wrote it', () => {
+    expect(decodeEntities('&starf; &notareal; a & b')).toBe('&starf; &notareal; a & b');
+  });
+});
+
+describe('a big document is laid out, not thrown at', () => {
+  /* `Math.max(...items)` makes one argument per element and gives up somewhere
+     past a hundred thousand of them. A log that size is an ordinary file, and
+     under `--wrap` a single wide fence produces one row per *screen* line, so
+     the count is not bounded by anything a person wrote. */
+  const HUGE = 200_000;
+
+  it('lays out a verbatim file of two hundred thousand lines', () => {
+    const log = Array.from({ length: HUGE }, (_, i) => `line ${i} some text here`).join('\n');
+    expect(() => layoutText(log, opts({ width: 79, overflow: 'scroll' }))).not.toThrow();
+  }, 60_000);
+
+  it('measures more items than an argument list can hold', () => {
+    /* The bound directly: `Math.max(...)` throws somewhere past a hundred
+       thousand arguments, and every caller in the layout engine now folds. */
+    const many = Array.from({ length: HUGE }, (_, i) => i % 977);
+    expect(() => widest(many, (n) => n)).not.toThrow();
+    expect(widest(many, (n) => n)).toBe(976);
+    expect(widest([], (n: number) => n, 4)).toBe(4);
+  });
+
+  it('lays out a code fence whose rows outnumber its source lines', () => {
+    // 40 source lines chopped at 24 columns is well past the argument bound.
+    const fence = '```\n' + Array.from({ length: 40 }, () => 'y'.repeat(80_000)).join('\n') + '\n```\n';
+    expect(() => layoutDoc(fence, opts({ width: 24, overflow: 'wrap' }))).not.toThrow();
+  }, 60_000);
+
+  it('lays out a table with a very large number of rows', () => {
+    const rows = Array.from({ length: HUGE }, (_, i) => `| ${i} | value ${i} |`).join('\n');
+    const table = `| a | b |\n|---|---|\n${rows}\n`;
+    expect(() => layoutDoc(table, opts({ width: 79, overflow: 'wrap' }))).not.toThrow();
+  }, 60_000);
+});
+
+describe('I-41 a nested block keeps its place in what contains it', () => {
+  const QUOTED = [
+    '> A quoted paragraph.',
+    '>',
+    '> - a list item inside the quote',
+    '>',
+    '>   ```sh',
+    '>   ' + 'x'.repeat(160),
+    '>   ```',
+    '>',
+    '>   Prose after the block.',
+    '',
+  ].join('\n');
+
+  it('does not drag a quote bar out of line to make room for a fence', () => {
+    const doc = layoutDoc(QUOTED, opts({ width: 199, overflow: 'scroll' }));
+    const barColumns = new Set(
+      doc.lines.filter((l) => l.plain.includes('▎')).map((l) => l.plain.indexOf('▎')),
+    );
+    expect([...barColumns], 'the rule down the side of a quote is one column').toHaveLength(1);
+  });
+
+  it('still bleeds a block that is not inside anything', () => {
+    const plain = '```sh\n' + 'x'.repeat(160) + '\n```\n';
+    const bled = layoutDoc(plain, opts({ width: 199, overflow: 'scroll' }));
+    const fence = bled.lines.find((l) => l.plain.includes('╭'))!;
+    expect(leading(fence.plain)).toBeLessThan(55);
+    expect(displayWidth(fence.plain)).toBeLessThanOrEqual(199);
   });
 });

@@ -1098,3 +1098,240 @@ describe('I-31 a host callback that rejects becomes a message, not a crash', () 
     app.unmount();
   }, 30_000);
 });
+
+/** Where a run of text sits in the frame, in cells — the unit a report uses. */
+function cellOf(app: { lastFrame(): string | undefined }, text: string) {
+  const rows = stripAnsi(app.lastFrame() ?? '').split('\n');
+  const row = rows.findIndex((r) => r.includes(text));
+  if (row === -1) throw new Error(`no row of the frame contains ${text}`);
+  return { column: rows[row]!.indexOf(text), row };
+}
+
+/** A press and the release that follows it, as a terminal would send them. */
+function click(app: { stdin: { write(s: string): void } }, target: { column: number; row: number }) {
+  const report = `0;${target.column + 1};${target.row + 1}`;
+  app.stdin.write(`\x1b[<${report}M\x1b[<${report}m`);
+}
+
+describe('I-42 following a link with the mouse', () => {
+  const LINKED = '# A\n\nsee [guide](guide.md) for more, or [home](#a).\n';
+
+  it('follows the link under the pointer', async () => {
+    const app = mount({ initial: { text: LINKED }, open: openGuide, mouse: true });
+    await settle();
+
+    click(app, cellOf(app, 'guide'));
+    await settle();
+
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('Guide');
+    app.unmount();
+  });
+
+  it('follows it exactly once, though the terminal reports press and release', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: LINKED },
+      mouse: true,
+      open: async () => {
+        opened++;
+        return { source: { text: '# Guide\n\nshort\n' }, name: 'guide.md', markdown: true };
+      },
+    });
+    await settle();
+
+    click(app, cellOf(app, 'guide'));
+    await settle();
+
+    expect(opened).toBe(1);
+    app.unmount();
+  });
+
+  it('does nothing when the click lands on ordinary text', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: LINKED },
+      mouse: true,
+      open: async () => { opened++; return null; },
+    });
+    await settle();
+
+    click(app, cellOf(app, 'see'));
+    await settle();
+
+    expect(opened).toBe(0);
+    app.unmount();
+  });
+
+  it('ignores a click on the status bar, which is chrome rather than page', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: LINKED },
+      mouse: true,
+      open: async () => { opened++; return null; },
+    });
+    await settle();
+
+    const rows = stripAnsi(app.lastFrame() ?? '').split('\n');
+    click(app, { column: 1, row: rows.length - 1 });
+    await settle();
+
+    expect(opened).toBe(0);
+    app.unmount();
+  });
+
+  it('ignores a click while an overlay owns the frame', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: LINKED },
+      mouse: true,
+      open: async () => { opened++; return null; },
+    });
+    await settle();
+
+    const at = cellOf(app, 'guide');
+    app.stdin.write('?');
+    await settle();
+    click(app, at);
+    await settle();
+
+    expect(opened).toBe(0);
+    app.unmount();
+  });
+
+  it('does not act on the wheel as though it were a button', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: LINKED },
+      mouse: true,
+      open: async () => { opened++; return null; },
+    });
+    await settle();
+
+    const at = cellOf(app, 'guide');
+    // 64 is wheel-up, whose low bits are a left button. It must not follow.
+    app.stdin.write(`\x1b[<64;${at.column + 1};${at.row + 1}M`);
+    await settle();
+
+    expect(opened).toBe(0);
+    app.unmount();
+  });
+
+  it('does not follow anything when mouse reporting is off', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: LINKED },
+      mouse: false,
+      open: async () => { opened++; return null; },
+    });
+    await settle();
+
+    click(app, cellOf(app, 'guide'));
+    await settle();
+
+    expect(opened).toBe(0);
+    app.unmount();
+  });
+});
+
+/** `open` that resolves when told to, so two reads can be raced deliberately. */
+function slowOpener() {
+  const pending = new Map<string, (v: { source: Source; name: string; markdown: boolean }) => void>();
+  const open = (path: string) =>
+    new Promise<{ source: Source; name: string; markdown: boolean } | null>((resolve) => {
+      pending.set(path, resolve);
+    });
+  const resolveOpen = (path: string) =>
+    pending.get(path)!({ source: { text: `# ${path}\n\nbody\n` }, name: path, markdown: true });
+  return { open, resolveOpen };
+}
+
+describe('I-42 a click that has been overtaken does not commit', () => {
+  const LINKED = '# A\n\nsee [guide](guide.md) or [other](other.md) for more.\n';
+
+  it('lands on the link clicked last, whichever read finishes first', async () => {
+    const { open, resolveOpen } = slowOpener();
+    const app = mount({ initial: { text: LINKED }, open, mouse: true });
+    await settle();
+
+    click(app, cellOf(app, 'guide'));
+    click(app, cellOf(app, 'other'));
+    await settle();
+
+    // The first click's read comes back last, which is the whole trap.
+    resolveOpen('other.md');
+    await settle();
+    resolveOpen('guide.md');
+    await settle();
+
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('other.md');
+    expect(stripAnsi(app.lastFrame() ?? '')).not.toContain('# guide.md');
+    app.unmount();
+  });
+
+  it('pushes one entry on the back stack for one visible move', async () => {
+    const BS = String.fromCharCode(127);
+    const { open, resolveOpen } = slowOpener();
+    const back: number[] = [];
+    const app = mount({ initial: { text: LINKED }, open, mouse: true, onBack: () => back.push(1) });
+    await settle();
+
+    click(app, cellOf(app, 'guide'));
+    click(app, cellOf(app, 'other'));
+    await settle();
+    resolveOpen('other.md');
+    await settle();
+    resolveOpen('guide.md');
+    await settle();
+
+    app.stdin.write(BS);
+    await settle();
+    // One backspace is enough to get all the way home, and it fired once.
+    expect(stripAnsi(app.lastFrame() ?? '')).toContain('see guide');
+    expect(back).toHaveLength(1);
+    app.unmount();
+  });
+});
+
+describe('I-42 the edge markers are chrome, not the row', () => {
+  /* A table wide enough that the viewport must pan over it, with a link in the
+     first cell — so panning puts `‹` directly over that link. Where the marks
+     land is pinned separately, against `composeFrame` itself, in
+     `test/overflow.test.ts`; this is the click path honouring them. */
+  const LABEL = 'follow me '.repeat(6).trim();
+  const WIDE = [
+    '| target | filler | filler |',
+    '|---|---|---|',
+    `| [${LABEL}](guide.md) | ${'x'.repeat(60)} | ${'y'.repeat(60)} |`,
+    '',
+  ].join('\n');
+
+  it('ignores a click on the mark instead of following what it covers', async () => {
+    let opened = 0;
+    const app = mount({
+      initial: { text: WIDE },
+      mouse: true,
+      overflow: 'scroll',
+      open: async () => { opened++; return null; },
+    });
+    await settle();
+
+    // Pan right, which is what puts a mark over the start of the row.
+    app.stdin.write('llll');
+    await settle();
+
+    const rows = stripAnsi(app.lastFrame() ?? '').split('\n');
+    // The row carrying the link, not the table border above it — both get a mark.
+    const row = rows.findIndex((r) => r.startsWith('‹') && r.includes('follow'));
+    expect(row, 'panning must put a left mark over the link row').toBeGreaterThanOrEqual(0);
+
+    // The cell beside the mark is inside the link, or there is nothing to refuse.
+    click(app, { column: 1, row });
+    await settle();
+    expect(opened, 'the cell beside the mark is the link').toBe(1);
+
+    click(app, { column: 0, row });
+    await settle();
+    expect(opened, 'the mark itself is chrome').toBe(1);
+    app.unmount();
+  });
+});

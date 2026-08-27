@@ -34,43 +34,81 @@ const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
 
 const VARIATION_SELECTOR_16 = 0xfe0f;
 
-function isWide(cp: number): boolean {
+/** Joins the glyph before it to the one after: `👩` + ZWJ + `💻` is one person. */
+const ZERO_WIDTH_JOINER = 0x200d;
+
+/** U+1F3FB..U+1F3FF recolour the emoji before them rather than drawing. */
+const SKIN_TONE = [0x1f3fb, 0x1f3ff] as const;
+
+function isSkinTone(codePoint: number): boolean {
+  return codePoint >= SKIN_TONE[0] && codePoint <= SKIN_TONE[1];
+}
+
+function isWide(codePoint: number): boolean {
   for (const [lo, hi] of WIDE_RANGES) {
-    if (cp < lo) return false;
-    if (cp <= hi) return true;
+    if (codePoint < lo) return false;
+    if (codePoint <= hi) return true;
   }
   return false;
 }
 
-function isZeroWidth(cp: number): boolean {
+function isZeroWidth(codePoint: number): boolean {
   // Combining marks, ZWJ/ZWNJ, variation selectors, control chars.
   return (
-    (cp >= 0x0300 && cp <= 0x036f) ||
-    (cp >= 0x200b && cp <= 0x200f) ||
-    (cp >= 0xfe00 && cp <= 0xfe0f) ||
-    cp === 0x20e3 ||
-    (cp < 0x20 && cp !== 0x00) ||
-    cp === 0x7f
+    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+    (codePoint >= 0x200b && codePoint <= 0x200f) ||
+    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+    codePoint === 0x20e3 ||
+    (codePoint < 0x20 && codePoint !== 0x00) ||
+    codePoint === 0x7f
   );
 }
 
-/** Terminal cells occupied by `s`. */
+/**
+ * Terminal cells occupied by `s`.
+ *
+ * A joined emoji sequence is **one** glyph of two cells, however many code
+ * points spell it. Counting its parts separately measured `👨‍👩‍👧‍👦` as eight
+ * cells and `👩‍💻` as four, so every table column holding one came out ragged
+ * and every row carrying one was measured wider than it draws. A skin tone
+ * recolours the emoji before it and draws nothing of its own, for the same
+ * reason. See I-2.
+ */
 export function displayWidth(s: string): number {
   let w = 0;
   let prevWidth = 0;
+  /** True between a joiner and the glyph it swallows. */
+  let joined = false;
   for (const ch of s) {
-    const cp = ch.codePointAt(0)!;
-    if (cp === VARIATION_SELECTOR_16) {
+    const codePoint = ch.codePointAt(0)!;
+    if (codePoint === ZERO_WIDTH_JOINER) {
+      /* The parts after a joiner add nothing, but the glyph they make is an
+         emoji and an emoji is two cells — so a narrow part before the joiner
+         still widens, exactly as U+FE0F widens one. `🏴` + ZWJ + `☠` is a
+         two-cell pirate flag, though `🏴` alone measures one. */
+      if (prevWidth === 1) {
+        w += 1;
+        prevWidth = 2;
+      }
+      joined = true;
+      continue;
+    }
+    if (codePoint === VARIATION_SELECTOR_16) {
       // U+FE0F requests emoji presentation, which renders the preceding
       // narrow character in two cells (e.g. "⚠️" vs "⚠").
-      if (prevWidth === 1) {
+      if (!joined && prevWidth === 1) {
         w += 1;
         prevWidth = 2;
       }
       continue;
     }
-    if (isZeroWidth(cp)) continue;
-    prevWidth = isWide(cp) ? 2 : 1;
+    if (isZeroWidth(codePoint) || isSkinTone(codePoint)) continue;
+    if (joined) {
+      // Part of the glyph before it, not a glyph of its own.
+      joined = false;
+      continue;
+    }
+    prevWidth = isWide(codePoint) ? 2 : 1;
     w += prevWidth;
   }
   return w;
@@ -81,12 +119,12 @@ export function displayWidth(s: string): number {
  * that one also covers control bytes, which are their own characters and must
  * not be absorbed into a neighbour.
  */
-function isCombining(cp: number): boolean {
+function isCombining(codePoint: number): boolean {
   return (
-    (cp >= 0x0300 && cp <= 0x036f) ||
-    (cp >= 0x200b && cp <= 0x200f) ||
-    (cp >= 0xfe00 && cp <= 0xfe0f) ||
-    cp === 0x20e3
+    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+    (codePoint >= 0x200b && codePoint <= 0x200f) ||
+    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+    codePoint === 0x20e3
   );
 }
 
@@ -104,15 +142,44 @@ function isCombining(cp: number): boolean {
  */
 export function* clusters(s: string): Generator<readonly [string, number]> {
   let cur = '';
+  /** True when the last code point taken was a joiner, so the next one binds. */
+  let joined = false;
   for (const ch of s) {
-    if (cur !== '' && isCombining(ch.codePointAt(0)!)) {
+    const codePoint = ch.codePointAt(0)!;
+    /* A joined emoji has to come out whole. Its parts are ordinary emoji code
+       points, so nothing about the one after a joiner says it binds backwards
+       except the joiner itself — cutting between them would leave half a
+       family on one row and half on the next. */
+    if (cur !== '' && (joined || isCombining(codePoint) || isSkinTone(codePoint))) {
       cur += ch;
+      joined = codePoint === ZERO_WIDTH_JOINER;
       continue;
     }
     if (cur !== '') yield [cur, displayWidth(cur)];
     cur = ch;
+    joined = false;
   }
   if (cur !== '') yield [cur, displayWidth(cur)];
+}
+
+/**
+ * The largest measurement over `items`, or `floor` when there are none.
+ *
+ * `Math.max(...items.map(measure))` reads better and throws: every element
+ * becomes an argument, and V8 gives up somewhere past a hundred thousand of
+ * them with a `RangeError` that no caller is expecting and no `try` around the
+ * layout intercepts. A file with that many lines is an ordinary log, and under
+ * `--wrap` a single wide code fence produces one row per *screen line* rather
+ * than per source line — so the count is not bounded by anything a person
+ * wrote. It took the viewer down mid-resize, which is the worst moment for it.
+ */
+export function widest<T>(items: readonly T[], measure: (item: T) => number, floor = 0): number {
+  let most = floor;
+  for (const item of items) {
+    const width = measure(item);
+    if (width > most) most = width;
+  }
+  return most;
 }
 
 /** Truncate to at most `max` cells, appending an ellipsis when cut. */

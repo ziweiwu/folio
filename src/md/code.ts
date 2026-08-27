@@ -1,8 +1,20 @@
 import { chopSpans, padSpans, spansWidth } from '../core/wrap.js';
-import { displayWidth } from '../core/width.js';
+import { displayWidth, widest } from '../core/width.js';
 import type { LayoutOptions, Span, Theme } from '../core/types.js';
+import type { Room } from './layout.js';
 
 const BOX = { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│' } as const;
+
+/** The band's own cost: a border and a space of padding on each side. */
+const FRAME = 4;
+
+/** Narrowest band that still draws two borders with something between them. */
+const MIN_BAND = 4;
+
+/** Code cells left over once the frame and the gutter have taken theirs. */
+function codeWithin(available: number, gutterWidth: number): number {
+  return Math.max(MIN_BAND, available - FRAME - gutterWidth);
+}
 
 /** Every span inside the block carries the background, so the band survives the
  *  full reset each span closes with. See `paint` in `core/ansi.ts`. */
@@ -22,9 +34,10 @@ export type RenderedCode = { lines: Span[][]; wide: boolean };
 export function layoutCode(
   code: string,
   lang: string,
-  width: number,
+  room: Room,
   opts: LayoutOptions,
 ): RenderedCode {
+  const width = room.column;
   const { theme } = opts;
   const src = code.replace(/\n+$/, '');
   const srcLines = src.split('\n');
@@ -36,14 +49,22 @@ export function layoutCode(
       : srcLines.map((l) => [{ text: l, style: { ...theme.codeText } }]);
 
   const gutterWidth = opts.lineNumbers ? String(srcLines.length).length + 1 : 0;
-  // frame + one space of padding on each side, plus the gutter
-  const fits = Math.max(4, width - 4 - gutterWidth);
+  const fits = codeWithin(width, gutterWidth);
   /* In scroll mode the block is as wide as its widest line, and the viewport
      shifts sideways over it. Chopping a command someone means to copy is worse
      than making them press `l`. */
-  const natural = Math.max(4, ...srcLines.map((l) => displayWidth(l)));
-  const inner = opts.overflow === 'scroll' ? Math.max(fits, natural) : fits;
-  const frameWidth = inner + 4 + gutterWidth;
+  const natural = widest(srcLines, displayWidth, MIN_BAND);
+  /* Wrapping chops, but it chops at the page rather than at the text column.
+     The band still starts at the column's width, so a three-line snippet lines
+     up with the prose exactly as before; only a block too wide for the column
+     grows, and only as far as the page can show. Without this a 155-cell
+     command on a 300-column terminal was split across two rows of 84 with 110
+     columns standing empty beside it. */
+  const inner =
+    opts.overflow === 'scroll'
+      ? Math.max(fits, natural)
+      : Math.max(fits, Math.min(natural, codeWithin(room.page, gutterWidth)));
+  const frameWidth = inner + FRAME + gutterWidth;
   const wide = frameWidth > width;
 
   const lines: Span[][] = [];

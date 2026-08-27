@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
-import { composeFrame, maxHOffset } from '../src/ui/chrome.js';
+import { composeFrame, isEdgeMarker, maxHOffset } from '../src/ui/chrome.js';
 import { highlightRow } from '../src/core/search.js';
 import { layoutDoc } from '../src/md/layout.js';
 import { pickTheme } from '../src/ui/theme.js';
@@ -347,5 +347,48 @@ describe('I-26 the cut mark does not depend on colour', () => {
 
     // The author's own ellipsis is content, and survives untouched.
     expect(frame.map(stripAnsi).join('\n')).toContain('…');
+  });
+});
+
+/** The columns of a composed row that carry `‹` or `›`. */
+function markerColumns(row: string): number[] {
+  const out: number[] = [];
+  [...stripAnsi(row)].forEach((cell, i) => {
+    if (cell === '‹' || cell === '›') out.push(i);
+  });
+  return out;
+}
+
+describe('I-42 isEdgeMarker agrees with where the markers are drawn', () => {
+  it('names exactly the cells composeFrame writes a mark over', () => {
+    const dark = pickTheme('dark');
+    const source = fixture('wide.md');
+    let rowsChecked = 0;
+    let marksSeen = 0;
+    for (const columns of [20, 40, 80, 120, 200]) {
+      const doc = layoutDoc(source, opts({ width: Math.max(4, columns - 1), overflow: 'scroll' }));
+      const height = Math.min(20, doc.lines.length);
+      for (let offset = 0; offset + height <= doc.lines.length; offset += 3) {
+        const maxH = maxHOffset(doc, { offset, height, total: doc.lines.length }, columns);
+        for (const hOffset of [0, 1, Math.floor(maxH / 2), maxH]) {
+          const rows = composeFrame(doc, { offset, height, total: doc.lines.length, hOffset }, columns, dark, 0);
+          rows.forEach((row, i) => {
+            const line = doc.lines[offset + i];
+            /* The scrollbar owns the last column and is never a marker, so the
+               body is what both sides are asked about. */
+            const drawn = markerColumns(row).filter((c) => c < columns - 1);
+            const claimed = Array.from({ length: Math.max(0, columns - 1) }, (_, c) => c).filter((c) =>
+              isEdgeMarker(line, c, columns, hOffset),
+            );
+            expect(claimed, `cols=${columns} offset=${offset} h=${hOffset} row=${i}`).toEqual(drawn);
+            rowsChecked++;
+            marksSeen += drawn.length;
+          });
+        }
+      }
+    }
+    expect(rowsChecked).toBeGreaterThan(300);
+    // Agreement is worthless if no mark was ever drawn to agree about.
+    expect(marksSeen, 'the sweep must actually meet both marks').toBeGreaterThan(20);
   });
 });

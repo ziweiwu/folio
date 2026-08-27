@@ -66,7 +66,8 @@ command. `‹` and `›` mark whichever edge continues.
 ### Links go somewhere
 
 `Tab` picks the next link and scrolls it into view, `Enter` follows it,
-`Backspace` goes back.
+`Backspace` goes back. Or just **click it** — a click follows the link under
+the pointer, and the wheel scrolls.
 
 - Relative paths open that file — `./guide.md`, `guide`, or a directory with
   an `index.md` inside
@@ -103,13 +104,29 @@ indentation that *is* the file. `--markdown` forces the parser anyway, and
 A directory or a binary file is refused with a reason, not rendered as pages of
 caret notation.
 
+## See it for yourself
+
+[`examples/`](https://github.com/ziweiwu/folio/tree/main/examples) in the
+repository is a guided tour — nine documents covering every construct folio
+draws, from nested lists to mermaid blocks to right-to-left text. Clone it and
+read the tour in the viewer itself:
+
+```sh
+git clone https://github.com/ziweiwu/folio && cd folio
+folio examples/README.md      # then Tab, Enter, Backspace to walk the tour
+```
+
 ## Keys
+
+The [full guide](https://github.com/ziweiwu/folio/blob/main/docs/GUIDE.md)
+walks through all of this in order; `?` lists the keys without leaving the
+viewer.
 
 ```
 j k ↓ ↑      one line              d u          half a screen
 f b space    a full screen         g G          top, bottom
 h l ← →      sideways              0            back to the left edge
-wheel        three lines
+wheel        three lines           click        follow the link under it
 
 tab ⇧tab     pick a link           enter        follow it
 backspace    go back               y            copy the code block on screen
@@ -222,7 +239,7 @@ See [AGENTS.md](AGENTS.md) for the working agreement, and
 [INVARIANTS.md](INVARIANTS.md) for the contract this is built against.
 
 ```sh
-npm test                    # 405 unit and property tests
+npm test                    # 500 unit and property tests
 npm run lint && npm run typecheck && npm run build
 npm run verify:smoke        # the no-terminal paths
 npm run verify:screenshots  # do docs/*.png still match what the app draws?

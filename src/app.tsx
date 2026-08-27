@@ -13,7 +13,7 @@ import { isMouseSequence, useMouse } from './hooks/useMouse.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import { layoutDoc } from './md/layout.js';
 import { layoutText } from './md/text.js';
-import { composeFrame, maxHOffset, sectionAt, statusBar } from './ui/chrome.js';
+import { composeFrame, isEdgeMarker, maxHOffset, sectionAt, statusBar } from './ui/chrome.js';
 import { centre, overlayRows } from './ui/overlay.js';
 import { helpPane, searchBar, tocPane } from './ui/panes.js';
 
@@ -294,8 +294,6 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
     [mode, query, doc, matches],
   );
 
-  useMouse(stdin, mouse, scrollBy);
-
   const quit = useCallback(() => exit(), [exit]);
 
   /** Put a hit a third of the way down rather than at the very top, so there is
@@ -380,18 +378,85 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
          or may be removed between the two calls. A rejection here would leave
          React with nothing to render and take the whole viewer down, so a
          failure to follow a link is reported the way every other one is. */
+      /* The newest attempt wins, not the first to finish. `open` reaches the
+         filesystem, so two links followed in quick succession — which a mouse
+         makes an easy accident — resolved in whatever order the disk chose:
+         the reader watched the second document paint and then be replaced by
+         the first, both pushed the *same* entry onto the back stack so one
+         backspace was a no-op, and `onBack` fired twice for one visible
+         move, unwinding the host's idea of the current file a level too far.
+         The same guard as I-33, which every other await in this file already
+         carries and this one did not. */
+      const attempt = ++followAttempt.current;
+      const nav = navGeneration.current;
       let next: Awaited<ReturnType<NonNullable<typeof open>>>;
       try {
         next = await open(link.path);
       } catch (err) {
+        if (attempt !== followAttempt.current || nav !== navGeneration.current) return;
         setStatus(`${link.path}: ${(err as Error).message}`);
         return;
       }
+      // Superseded by a later link, or by a `backspace` taken while this waited.
+      if (attempt !== followAttempt.current || nav !== navGeneration.current) return;
       if (!next) setStatus(`${link.path}: not found`);
       else goTo(next, link.anchor, true);
     },
     [doc, open, goTo, scrollTo],
   );
+
+  /* What a click has to be resolved against, kept current for a listener that
+     lives outside React's event system. Synced in an effect rather than during
+     render: a `data` event is a macrotask, so effects have always flushed by
+     the time one arrives.
+     `follow` is held here too, and not merely called from the closure, because
+     it depends on `offset` — so depending on it directly rebuilt the handler
+     and tore the stdin listener down and put it back on *every scroll frame*.
+     Nothing broke, but the scroll path is the one place this app does no work
+     it does not have to (I-4). */
+  const linksRef = useRef(links);
+  const hViewRef = useRef(hView);
+  const followRef = useRef(follow);
+  useEffect(() => {
+    linksRef.current = links;
+    hViewRef.current = hView;
+    followRef.current = follow;
+  }, [links, hView, follow]);
+
+  /**
+   * Follow the link under a click, if there is one.
+   *
+   * A report gives a viewport row and a screen cell, so both are turned back
+   * into document coordinates: the row by adding the scroll offset, the cell by
+   * adding the sideways offset — but only on a row that actually moves
+   * sideways, because prose does not (I-19). Link ranges were measured in
+   * display cells when the row was laid out, which is the unit a mouse report
+   * already arrives in, so nothing is re-measured here.
+   *
+   * A click that lands on no link does nothing rather than say so. Missing is
+   * the ordinary case — most of the page is not a link — and a viewer that
+   * complained about it would spend the status bar on the reader's every
+   * stray click.
+   */
+  const clickAt = useCallback(
+    (column: number, row: number) => {
+      // Overlays own the whole frame while they are up, and the scrollbar and
+      // status bar are chrome: a click on any of them is not a click on the page.
+      if (modeRef.current !== 'doc' || row >= height || column >= columns - 1) return;
+      const line = offsetRef.current + row;
+      // `‹` and `›` are the viewer's own marks, drawn over the row rather than
+      // part of it, so a click on one is a click on chrome.
+      if (isEdgeMarker(doc.lines[line], column, columns, hViewRef.current)) return;
+      const cell = column + (doc.lines[line]?.wide === true ? hViewRef.current : 0);
+      const index = linksRef.current.findIndex((l) => l.row === line && cell >= l.start && cell < l.end);
+      if (index === -1) return;
+      putLinkIndex(index);
+      void followRef.current(linksRef.current[index]!.href);
+    },
+    [height, columns, doc, offsetRef, putLinkIndex],
+  );
+
+  useMouse(stdin, mouse, scrollBy, clickAt);
 
   const goBack = useCallback(() => {
     const prev = back.current.pop();
@@ -421,6 +486,8 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
      after a link was followed would otherwise replace the document now on
      screen with the contents of the one left behind. */
   const navGeneration = useRef(0);
+  /** Which link-follow is the live one, so an overtaken read cannot commit. */
+  const followAttempt = useRef(0);
   const doReload = useCallback(async () => {
     if (!reload) return;
     const generation = ++reloadGeneration.current;

@@ -9,21 +9,60 @@ export type InlineContext = {
   refs: string[];
 };
 
+/**
+ * The named references worth spelling out.
+ *
+ * Deliberately not the full HTML set — that is two thousand entries and a
+ * dependency, for a viewer whose first pillar is staying small. This is the
+ * list that actually turns up in README files, and anything outside it is left
+ * as the author wrote it, which is honest: a reader who sees `&starf;` can at
+ * least tell it was in the file.
+ */
 const ENTITIES: Record<string, string> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&#39;': "'",
-  '&apos;': "'",
-  '&nbsp;': ' ',
-  '&hellip;': '…',
-  '&mdash;': '—',
-  '&ndash;': '–',
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  nbsp: ' ', hellip: '…', mdash: '—', ndash: '–',
+  copy: '©', reg: '®', trade: '™', deg: '°', plusmn: '±',
+  times: '×', divide: '÷', frac12: '½', frac14: '¼', frac34: '¾',
+  laquo: '«', raquo: '»', lsquo: '\u2018', rsquo: '\u2019', ldquo: '\u201c', rdquo: '\u201d',
+  bull: '•', middot: '·', dagger: '†', sect: '§', para: '¶',
+  larr: '←', uarr: '↑', rarr: '→', darr: '↓', harr: '↔',
+  ne: '≠', le: '≤', ge: '≥', asymp: '≈', minus: '−',
+  euro: '€', pound: '£', yen: '¥', cent: '¢',
 };
 
+/** Highest code point Unicode defines; anything above it is not a character. */
+const MAX_CODE_POINT = 0x10ffff;
+
+/** `&#x2192;` counts in hexadecimal, `&#8594;` in decimal. */
+const HEX = 16;
+const DECIMAL = 10;
+
+/**
+ * A numeric reference, decoded — unless what it spells is not text.
+ *
+ * The source is sanitised on the way in, before anything parses it (I-29), so
+ * a reference decoded *here* would slip past that: `&#27;` is an escape and
+ * `&#7;` is the bell, and a document that could spell either would be driving
+ * the terminal again through a side door. Control bytes, surrogates and
+ * out-of-range values are therefore left as the source text rather than
+ * turned into the byte they name.
+ */
+function decodeNumeric(body: string): string | null {
+  const hex = body[0] === 'x' || body[0] === 'X';
+  const code = Number.parseInt(hex ? body.slice(1) : body, hex ? HEX : DECIMAL);
+  if (!Number.isInteger(code) || code > MAX_CODE_POINT) return null;
+  // C0, DEL and C1, then the surrogate range, which is not a character at all.
+  if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return null;
+  if (code >= 0xd800 && code <= 0xdfff) return null;
+  return String.fromCodePoint(code);
+}
+
+const ENTITY = /&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{1,31});/g;
+
 export function decodeEntities(s: string): string {
-  return s.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp|hellip|mdash|ndash);/g, (m) => ENTITIES[m] ?? m);
+  return s.replace(ENTITY, (whole, body: string) =>
+    (body[0] === '#' ? decodeNumeric(body.slice(1)) : ENTITIES[body] ?? null) ?? whole,
+  );
 }
 
 function merge(base: Style, extra: Style): Style {

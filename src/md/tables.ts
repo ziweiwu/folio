@@ -2,6 +2,8 @@ import type { Tokens } from 'marked';
 import { padSpans, spansWidth, truncateSpans } from '../core/wrap.js';
 import { inlineSpans, type InlineContext } from './inline.js';
 import type { LayoutOptions, Span } from '../core/types.js';
+import type { Room } from './layout.js';
+import { widest } from '../core/width.js';
 
 const B = {
   tl: '┌', tm: '┬', tr: '┐',
@@ -12,6 +14,9 @@ const B = {
 
 type Align = 'left' | 'center' | 'right';
 
+/** Narrowest a column may be squeezed to before shrinking stops helping. */
+const MIN_COLUMN = 3;
+
 /**
  * Solve column widths.
  *
@@ -21,17 +26,16 @@ type Align = 'left' | 'center' | 'right';
  */
 function solveWidths(natural: number[], budget: number): number[] {
   const w = [...natural];
-  const MIN = 3;
   let total = w.reduce((a, b) => a + b, 0);
   while (total > budget) {
-    let widest = 0;
-    for (let i = 1; i < w.length; i++) if (w[i]! > w[widest]!) widest = i;
+    let fattest = 0;
+    for (let i = 1; i < w.length; i++) if (w[i]! > w[fattest]!) fattest = i;
     /* Every column is at the floor and it still does not fit: a table with
        enough columns cannot be made narrow enough by shrinking alone, because
        the frame alone costs three cells per column. The row is returned
        oversized and the viewport chops it — see `wide` below, and I-26. */
-    if (w[widest]! <= MIN) break;
-    w[widest]!--;
+    if (w[fattest]! <= MIN_COLUMN) break;
+    w[fattest]!--;
     total--;
   }
   return w;
@@ -53,10 +57,11 @@ export type RenderedTable = { lines: Span[][]; wide: boolean };
 
 export function layoutTable(
   token: Tokens.Table,
-  width: number,
+  room: Room,
   opts: LayoutOptions,
   ctx: InlineContext,
 ): RenderedTable {
+  const width = room.column;
   const { theme } = opts;
   const header = token.header.map((c) => inlineSpans(c.tokens, theme.tableHeader, ctx));
   const rows = token.rows.map((r) => r.map((c) => inlineSpans(c.tokens, theme.text, ctx)));
@@ -66,16 +71,24 @@ export function layoutTable(
   const aligns: Align[] = token.align.map((a) => (a === 'center' || a === 'right' ? a : 'left'));
 
   const natural = header.map((h, i) =>
-    Math.max(spansWidth(h), ...rows.map((r) => (r[i] ? spansWidth(r[i]!) : 0)), 1),
+    widest(rows, (r) => (r[i] ? spansWidth(r[i]!) : 0), Math.max(spansWidth(h), 1)),
   );
   // Frame and padding: one '│' per boundary plus a space either side of a cell.
   const chrome = cols * 3 + 1;
   /* Scroll mode keeps every column at its natural width and lets the viewport
-     move over the table, rather than truncating cells nobody can then read. */
+     move over the table, rather than truncating cells nobody can then read.
+
+     Wrapping does have to cut, but it cuts against the page, not the text
+     column. `solveWidths` only ever
+     shrinks a column below its natural width, so a table that already fits the
+     column is unchanged; a wider one keeps its cells instead of having them cut
+     to a width the terminal was never limited to. This is the one path where
+     truncation loses text outright — `--wrap` and one-shot printing have no
+     viewport to pan — so the budget has to be the room that actually exists. */
   const widths =
     opts.overflow === 'scroll'
       ? natural
-      : solveWidths(natural, Math.max(cols * 3, width - chrome));
+      : solveWidths(natural, Math.max(cols * MIN_COLUMN, room.page - chrome));
   /* `wide` means "the viewport may scroll sideways over this". Under `wrap`
      the reader has asked for the opposite — chop it to fit — so an oversized
      row is left un-flagged and the viewport clips it with a mark instead of

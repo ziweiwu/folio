@@ -56,13 +56,16 @@ fail=0
 #
 # `detectColorLevel` returns 0 when TERM is empty or `dumb`, and a GitHub
 # runner sets neither TERM nor COLORTERM — so on CI the viewer correctly
-# decided there was no colour, and with no colour it does not enable mouse
-# reporting at all. Three checks then asserted mouse sequences that the app was
-# right not to send, and the highlighting check looked for truecolor tokens
-# that cannot exist below level 3. They failed on every CI run since the job
-# was added, while passing on any developer's machine, because the difference
-# was the environment and not the code. Forcing the level is what makes the
-# checks exercise the thing they name.
+# decided there was no colour, and the highlighting check then looked for
+# truecolor tokens that cannot exist below level 3. It failed on every CI run
+# since the job was added while passing on any developer's machine, because the
+# difference was the environment and not the code. Forcing the level is what
+# makes that check exercise the thing it names.
+#
+# Mouse reporting used to hang off the same level, which is why three mouse
+# checks failed here too. It no longer does — colour is a preference and a
+# pointer is a capability — and the run at the end of this script is what holds
+# that apart, by asking for mouse reporting with colour explicitly off.
 export FORCE_COLOR=3
 
 # Only this run's own processes are ever signalled. `script` puts the app in a
@@ -348,6 +351,34 @@ else
   printf '  ok    bracketed paste was never enabled (I-35)\n'
 fi
 rm -f "$LOG2"
+
+# A pointer is a capability, colour is a preference (I-42)
+#
+# `--plain` used to turn mouse reporting off with the colour, so a reader who
+# set `NO_COLOR` lost the wheel and the click as well — on a terminal that was
+# perfectly able to report both, and with nothing said about it. Only a real
+# terminal can show this: the enable is written to the pty and nowhere else.
+LOG4=$(mktemp "${TMPDIR:-/tmp}/umv-plain.XXXXXX")
+{
+  await "$LOG4" "${ESC}[?1049h" 60
+  printf 'q'; sleep 0.5
+} | NO_COLOR=1 script -qF "$LOG4" bash -c "$VIEWER --plain test/fixtures/kitchen-sink.md" >/dev/null 2>&1
+
+echo "mouse reporting does not depend on colour (I-42)"
+if grep -qaF "${ESC}[?1006h" "$LOG4"; then
+  printf '  ok    enabled SGR mouse reporting with --plain and NO_COLOR\n'
+else
+  printf '  FAIL  no mouse reporting with --plain and NO_COLOR\n'
+  fail=1
+fi
+# And the colour really was off, or the check above proves nothing.
+if grep -qaF "${ESC}[38;2;" "$LOG4"; then
+  printf '  FAIL  --plain still emitted colour, so the check above proves nothing\n'
+  fail=1
+else
+  printf '  ok    and drew the document with no colour at all\n'
+fi
+rm -f "$LOG4"
 
 echo
 if [ "$fail" -eq 0 ]; then

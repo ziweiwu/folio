@@ -6,13 +6,16 @@ import { inlineSpans, type InlineContext } from './inline.js';
 import { layoutCode } from './code.js';
 import { layoutTable } from './tables.js';
 import { parseMarkdown, type FrontMatter } from './parse.js';
-import { displayWidth, truncate } from '../core/width.js';
+import { displayWidth, truncate, widest } from '../core/width.js';
 import { sanitizeSource } from '../core/sanitize.js';
 
 /** Breathing room between the terminal edge and the text column. */
 const MARGIN = 2;
 /** Below this the text column stops being worth centring. */
 const MIN_INNER = 20;
+
+/** Widest a front-matter key column may grow before the values start too late. */
+const MAX_KEY_COLUMN = 20;
 
 const BULLETS = ['•', '◦', '▪', '·'];
 
@@ -24,6 +27,8 @@ type Ctx = {
   ictx: InlineContext;
   left: number;
   inner: number;
+  /** Total cells the frame may draw into, which is what a wide block bleeds to. */
+  page: number;
   /** Cells of indentation inside the text column, before any quote bars. */
   indent: number;
   /** Cells reserved for a list marker, blank on continuation rows. */
@@ -38,11 +43,69 @@ type Ctx = {
   tight: boolean;
 };
 
-export function geometry(opts: LayoutOptions): { left: number; inner: number } {
+export function geometry(opts: LayoutOptions): { left: number; inner: number; page: number } {
   const total = Math.max(MIN_INNER, opts.width);
   let inner = opts.maxWidth > 0 ? Math.min(total - MARGIN * 2, opts.maxWidth) : total - MARGIN * 2;
   if (inner < MIN_INNER) inner = Math.max(1, total - 2);
-  return { left: Math.max(1, Math.floor((total - inner) / 2)), inner };
+  return { left: Math.max(1, Math.floor((total - inner) / 2)), inner, page: total };
+}
+
+/**
+ * The same context with the centring margin narrowed until a natural-width
+ * block fits the page.
+ *
+ * The margin is decoration; the text is not. A code block or table laid out at
+ * its natural width is not wrapped to the text column, so on a terminal much
+ * wider than `maxWidth` it was indented to line up with an 88-cell column and
+ * then chopped at the right edge — a 155-cell command on a 200-column terminal
+ * lost its tail behind a 55-cell margin wide enough to have shown the whole
+ * thing, and the reader had to press `l` to read past blank space. See I-41.
+ *
+ * Pulled back only as far as the block needs, so a block that already fits
+ * stays aligned with the prose around it, and never past `MARGIN`, so it still
+ * reads as a page rather than as output flush against the terminal edge.
+ * Structural indentation — a list's, a quote's — is left alone: that is what
+ * says the block belongs to the item containing it.
+ */
+export function bleedLeft(left: number, page: number, structural: number, natural: number): number {
+  // A margin is kept on the right as well, or a block that used the whole
+  // budget would sit flush against the edge with a margin only on one side.
+  const spare = page - structural - natural - MARGIN;
+  if (spare >= left) return left;
+  return Math.max(Math.min(left, MARGIN), spare);
+}
+
+function bleed(ctx: Ctx, lines: readonly Span[][]): Ctx {
+  /* Only a block at the top level moves. Narrowing the margin shifts the whole
+     lead, and inside a list or a quote the lead is what ties the block to what
+     contains it: a fenced block in a quoted list item dragged the quote bar
+     from column 37 to column 4 for its three rows and back again, so the rule
+     down the side of the quote broke and there was no telling which rows were
+     still inside it. The block was cut at the right edge anyway, so the jog
+     bought nothing at all. A nested block keeps its place and is panned with
+     `l`, exactly as before. */
+  if (lines.length === 0 || structuralWidth(ctx) > 0) return ctx;
+  return { ...ctx, left: bleedLeft(ctx.left, ctx.page, 0, widest(lines, spansWidth)) };
+}
+
+function structuralWidth(ctx: Ctx): number {
+  return ctx.indent + spansWidth(ctx.prefix) + ctx.hang;
+}
+
+/**
+ * The two widths a natural-width block is fitted against.
+ *
+ * `column` is the text column it aligns with when it fits there; `page` is how
+ * far it may grow before anything is cut. They were the same number, which is
+ * why `--wrap` and one-shot output cut a wide table's cells to 88 on a
+ * 300-column terminal — discarding text with two hundred columns standing
+ * empty, where the reader has no viewport to pan and so no way to get it back.
+ */
+export type Room = { column: number; page: number };
+
+function room(ctx: Ctx): Room {
+  const column = available(ctx);
+  return { column, page: Math.max(column, ctx.page - structuralWidth(ctx) - MARGIN * 2) };
 }
 
 function available(ctx: Ctx): number {
@@ -204,9 +267,10 @@ function renderToken(t: Token, ctx: Ctx, depth: number): void {
     }
     case 'code': {
       const tok = t as Tokens.Code;
-      const block = layoutCode(tok.text, tok.lang ?? '', available(ctx), ctx.opts);
+      const block = layoutCode(tok.text, tok.lang ?? '', room(ctx), ctx.opts);
+      const bctx = bleed(ctx, block.lines);
       const from = ctx.out.lines.length;
-      for (const row of block.lines) emitRaw(ctx, row, undefined, block.wide);
+      for (const row of block.lines) emitRaw(bctx, row, undefined, block.wide);
       ctx.out.code.push({
         from,
         to: ctx.out.lines.length - 1,
@@ -222,8 +286,9 @@ function renderToken(t: Token, ctx: Ctx, depth: number): void {
       renderList(t as Tokens.List, ctx, depth);
       return;
     case 'table': {
-      const table = layoutTable(t as Tokens.Table, available(ctx), ctx.opts, ctx.ictx);
-      for (const row of table.lines) emitRaw(ctx, row, undefined, table.wide);
+      const table = layoutTable(t as Tokens.Table, room(ctx), ctx.opts, ctx.ictx);
+      const bctx = bleed(ctx, table.lines);
+      for (const row of table.lines) emitRaw(bctx, row, undefined, table.wide);
       return;
     }
     case 'hr':
@@ -264,7 +329,7 @@ function renderFrontMatter(fm: FrontMatter, ctx: Ctx): void {
      key is then cut to the cap it was measured against: `padSpans` can only
      add, so a key longer than `keyWidth` used to push its value flush against
      itself with no separator at all and carry the row past the frame (I-1). */
-  const keyWidth = Math.min(20, Math.max(...fm.map(([k]) => displayWidth(k))));
+  const keyWidth = Math.min(MAX_KEY_COLUMN, widest(fm, ([k]) => displayWidth(k)));
   /* The key column goes through the marker mechanism rather than into the text
      itself: `emit` normalises runs of whitespace, so padding written into a
      span would be collapsed back to one space and the column would not line
@@ -301,7 +366,7 @@ export function layoutDoc(src: string, opts: LayoutOptions): Doc {
   /* I-29: control bytes are neutralised before anything parses or measures
      them, so no path downstream can carry one into a rendered row. */
   const { frontMatter, tokens } = parseMarkdown(sanitizeSource(src));
-  const { left, inner } = geometry(opts);
+  const { left, inner, page } = geometry(opts);
   const out: Out = { lines: [], toc: [], code: [], block: 0 };
   const ictx: InlineContext = { theme: opts.theme, links: opts.links, refs: [] };
   const ctx: Ctx = {
@@ -310,6 +375,7 @@ export function layoutDoc(src: string, opts: LayoutOptions): Doc {
     ictx,
     left,
     inner,
+    page,
     indent: 0,
     hang: 0,
     prefix: [],

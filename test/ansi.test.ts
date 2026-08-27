@@ -119,3 +119,41 @@ describe('sliceAnsi', () => {
     );
   });
 });
+
+describe('I-2 slicing and measuring agree about what a glyph is', () => {
+  const GLYPHS = ['a', '中', '⚠️', '👩‍💻', '👨‍👩‍👧‍👦', '🧑‍🤝‍🧑', '👋🏽', '🏴‍☠️', '🇯🇵', 'é'];
+
+  it('slices a joined emoji as one glyph, never through it', () => {
+    /* `displayWidth` counts a joined sequence as one two-cell glyph, so the
+       scanner behind `sliceAnsi` has to as well. When it did not, the two
+       disagreed by six cells on a row holding a family, and a slice of that
+       row came out short — the previous frame showing through the gap. */
+    const text = `ab${'👨‍👩‍👧‍👦'}cd`;
+    expect(ansiWidth(text)).toBe(6);
+    for (let end = 0; end <= 6; end++) {
+      for (let start = 0; start <= end; start++) {
+        expect(ansiWidth(sliceAnsi(text, start, end)), `slice(${start},${end})`).toBe(end - start);
+      }
+    }
+  });
+
+  it('keeps every slice exactly as wide as it was asked for', () => {
+    for (const glyph of GLYPHS) {
+      const text = `x${glyph}y${glyph}z`;
+      const full = ansiWidth(text);
+      for (let end = 0; end <= full; end++) {
+        for (let start = 0; start <= end; start++) {
+          expect(ansiWidth(sliceAnsi(text, start, end)), `${glyph} slice(${start},${end})`).toBe(end - start);
+        }
+      }
+    }
+  });
+
+  it('agrees with itself through styling and hyperlinks', () => {
+    const withEscapes = `\u001b[1mbold ${'👩‍💻'}\u001b[0m plain`;
+    const full = ansiWidth(withEscapes);
+    for (let end = 0; end <= full; end++) {
+      expect(ansiWidth(sliceAnsi(withEscapes, 0, end)), `slice(0,${end})`).toBe(end);
+    }
+  });
+});

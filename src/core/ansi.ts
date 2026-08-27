@@ -4,7 +4,7 @@
  * implementation.
  */
 
-import { displayWidth } from './width.js';
+import { clusters, displayWidth } from './width.js';
 
 /** 0 = no colour at all, 2 = 256 colours, 3 = 24-bit. */
 export type ColorLevel = 0 | 2 | 3;
@@ -177,30 +177,35 @@ type Chunk = { esc: string } | { ch: string; w: number };
 function tokenize(s: string): Chunk[] {
   const out: Chunk[] = [];
   let i = 0;
+  /* Runs of ordinary text are handed to `clusters`, which is the one place that
+     knows what a cluster is. This used to absorb any following zero-width code
+     point itself, which was right for a combining mark and wrong for a joined
+     emoji: the code point *after* a joiner is an ordinary wide emoji, so the
+     scanner stopped there while `displayWidth` counted the whole sequence as
+     one glyph. The two then disagreed, and a slice of a row containing `👨‍👩‍👧‍👦`
+     came out six cells short of what it was asked for — which is I-1 broken by
+     the two measurements drifting apart. One definition, used twice. */
+  let text = '';
+  const flush = () => {
+    if (text === '') return;
+    for (const [ch, w] of clusters(text)) out.push({ ch, w });
+    text = '';
+  };
   while (i < s.length) {
     if (s[i] === ESC) {
       const rest = s.slice(i);
       const m = SGR_RE.exec(rest) ?? OSC8_RE.exec(rest) ?? OTHER_ESC_RE.exec(rest);
       if (m) {
+        flush();
         out.push({ esc: m[0] });
         i += m[0].length;
         continue;
       }
     }
-    /* Absorb zero-width code points into the character they modify. A slice
-       must never separate a base glyph from its combining mark, and U+FE0F
-       widens the glyph before it — so measuring per code point would disagree
-       with `displayWidth` over the whole string. */
-    let ch = String.fromCodePoint(s.codePointAt(i)!);
-    i += ch.length;
-    while (i < s.length) {
-      const next = String.fromCodePoint(s.codePointAt(i)!);
-      if (next === ESC || displayWidth(next) !== 0) break;
-      ch += next;
-      i += next.length;
-    }
-    out.push({ ch, w: displayWidth(ch) });
+    text += String.fromCodePoint(s.codePointAt(i)!);
+    i += String.fromCodePoint(s.codePointAt(i)!).length;
   }
+  flush();
   return out;
 }
 

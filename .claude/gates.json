@@ -1,0 +1,20 @@
+{
+  "watch": [
+    "src/",
+    "test/",
+    "scripts/",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "tsconfig.build.json"
+  ],
+  "gates": [
+    ["typecheck", ["npm", "run", "typecheck"]],
+    ["lint", ["npm", "run", "lint"]],
+    ["test", ["npm", "test"]],
+    ["build", ["npm", "run", "build"]],
+    ["verify:smoke", ["npm", "run", "verify:smoke"]],
+    ["verify:screenshots", ["npm", "run", "verify:screenshots"]]
+  ],
+  "timeout": 600
+}

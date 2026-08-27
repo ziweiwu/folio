@@ -141,6 +141,7 @@ const KEYS: ReadonlyArray<readonly [string, string]> = [
   ['', ''],
   ['tab  ⇧tab', 'pick a link'],
   ['enter', 'follow it'],
+  ['click', 'follow the link under it'],
   ['backspace', 'go back'],
   ['y', 'copy the code block on screen'],
   ['r', 'reload from disk'],

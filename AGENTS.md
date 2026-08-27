@@ -77,13 +77,25 @@ npm run verify:screenshots    # docs/*.png still match what the app draws
 npm run verify:pty            # a real pty: drive it, signal it, check what it restored
 ```
 
-Everything but `verify:pty` also runs as a `Stop` hook
-(`.claude/hooks/verify-gate.py`), so a turn that leaves the tree failing is
-refused rather than summarised. The hook skips when nothing under `src/`,
-`test/`, `scripts/` or the manifests has changed, and blocks at most once per
-tree state so a failure it cannot fix never traps the session. `verify:pty` is
-excluded there because it is minutes long and needs a real pty — CI carries it
-on a macOS runner instead.
+Everything but `verify:pty` also runs as a `Stop` hook, so a turn that leaves
+the tree failing is refused rather than summarised. The hook skips when nothing
+under `src/`, `test/`, `scripts/` or the manifests has changed, and blocks at
+most once per tree state so a failure it cannot fix never traps the session.
+`verify:pty` is excluded there because it is minutes long and needs a real pty —
+CI carries it on a macOS runner instead.
+
+The hook itself is no longer in this repo. It lives in the `harness` plugin
+(`plugins/harness/hooks/verify-gate.py` in the agent checkout) and reads its
+list from **`.claude/gates.json`** here — `watch` pathspecs, `gates` as
+`[name, argv]` pairs, and a per-gate `timeout`. It began as this repo's own
+`.claude/hooks/verify-gate.py`, which worked well enough to be worth every repo
+having and was reachable by exactly one; generalising it cost only moving the
+npm-script names into that file. A repo with no `gates.json` gets nothing, which
+is what keeps a Stop hook that runs a test suite from firing everywhere.
+
+`watch` entries are git pathspecs, not prefixes — git matches whole path
+components, so the manifests are spelled out individually. A lockfile change is
+the one most likely to break the build and the easiest to leave off the list.
 
 `verify:pty` is the one that matters most. A test renderer never touches real
 terminal I/O, so it cannot catch a raw-mode crash on launch or an escape
@@ -102,6 +114,22 @@ writes. One check — following a link the filesystem refuses, `scripts/pty-link
 rather than only send keys at it, and on the macOS CI runner a typescript
 cannot be read while the run is in progress. Both are hermetic the same way,
 pointing `XDG_STATE_HOME` at a temporary directory (I-24).
+
+## The example documents
+
+`examples/` is nine documents covering every markdown construct the viewer
+draws, with `examples/README.md` as an index whose relative links resolve, so
+`folio examples/README.md` is a working tour of link following.
+
+They are demonstration documents first and fixtures second: the prose in them is
+real, because a viewer that only looks right on lorem ipsum has not been tested.
+They are also the widest net there is for display-width bugs — the joined-emoji
+mis-measurement behind I-2 was found by rendering `examples/07-unicode.md` and
+noticing a table column that would not line up.
+
+Keep the relative links resolving. `examples/04-links.md` carries one
+deliberately broken link, labelled as such in its own prose; that one is the
+exception and must stay broken.
 
 ## The invariant contract
 

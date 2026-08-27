@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { classifyLink, findAnchor, slugify } from '../src/core/links.js';
 import { linkRanges } from '../src/core/wrap.js';
 import { ansiWidth, stripAnsi } from '../src/core/ansi.js';
@@ -126,5 +128,67 @@ describe('wikilinks', () => {
   it('ignores an empty wikilink', () => {
     const doc3 = layoutDoc('[[]] stays\n', opts({ level: 0 }));
     expect(doc3.lines[0]!.plain).toContain('[[]]');
+  });
+});
+
+describe('the example documents stay a working tour', () => {
+  const DIR = join(import.meta.dirname, '..', 'examples');
+
+  /* The one dead end in the tour, which `04-links.md` introduces in its own
+     prose so a reader can see what a broken link looks like. */
+  const DELIBERATELY_BROKEN = '99-nowhere.md';
+
+  const EXAMPLES = readdirSync(DIR).filter((f) => f.endsWith('.md')).sort();
+
+  /** The spellings `cli.tsx` tries for a target with no extension. */
+  function resolves(target: string): boolean {
+    const start = resolve(DIR, target);
+    const spellings = /\.[^./\\]+$/.test(start)
+      ? [start]
+      : [start, `${start}.md`, `${start}.markdown`, resolve(start, 'index.md'), resolve(start, 'README.md')];
+    return spellings.some((path) => existsSync(path) && statSync(path).isFile());
+  }
+
+  /* Taken from the laid-out document rather than from the source, so this sees
+     exactly the links a reader can reach: a `[text](target)` written inside
+     backticks is an example of the syntax, not a link, and the parser is what
+     knows the difference. */
+  function linksIn(name: string) {
+    const doc = layoutDoc(readFileSync(join(DIR, name), 'utf8'), opts({ width: 119 }));
+    return { doc, hrefs: doc.lines.flatMap((line) => (line.links ?? []).map((t) => t.href)) };
+  }
+
+  it('has examples to check', () => {
+    expect(EXAMPLES.length).toBeGreaterThan(5);
+    expect(EXAMPLES).toContain('README.md');
+  });
+
+  for (const name of EXAMPLES) {
+    it(`${name}: every relative link points at a file that exists`, () => {
+      const dead = linksIn(name)
+        .hrefs.map((href) => classifyLink(href))
+        .filter((link) => link?.kind === 'file')
+        .map((link) => (link as { path: string }).path)
+        .filter((path) => path !== DELIBERATELY_BROKEN && !resolves(path));
+      expect([...new Set(dead)], `dead relative links in ${name}`).toEqual([]);
+    });
+
+    it(`${name}: every same-file anchor finds a heading`, () => {
+      /* Through `findAnchor`, which is what the viewer uses — including its
+         loose fallback, so an anchor that is close enough still counts, and
+         the tour can demonstrate that it does. */
+      const { doc, hrefs } = linksIn(name);
+      const dead = hrefs
+        .map((href) => classifyLink(href))
+        .filter((link) => link?.kind === 'anchor')
+        .map((link) => (link as { anchor: string }).anchor)
+        .filter((anchor) => findAnchor(doc.toc, anchor) === -1);
+      expect([...new Set(dead)], `anchors matching no heading in ${name}`).toEqual([]);
+    });
+  }
+
+  it('still carries the one broken link the tour is meant to show', () => {
+    expect(linksIn('04-links.md').hrefs).toContain(DELIBERATELY_BROKEN);
+    expect(resolves(DELIBERATELY_BROKEN)).toBe(false);
   });
 });

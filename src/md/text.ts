@@ -2,6 +2,7 @@ import { chopSpans, plainSpans, renderSpans } from '../core/wrap.js';
 import type { Doc, LayoutOptions, Line } from '../core/types.js';
 import { geometry } from './layout.js';
 import { sanitizeSource } from '../core/sanitize.js';
+import { displayWidth, widest } from '../core/width.js';
 
 /**
  * Render a file as plain text, with no markup interpretation at all.
@@ -14,31 +15,72 @@ import { sanitizeSource } from '../core/sanitize.js';
  *
  * Lines are chopped rather than word-wrapped and blank lines are preserved
  * exactly, because in a plain-text file the author's own layout is the layout.
+ *
+ * Which is also why the text column does not apply here. Prose is capped at
+ * `maxWidth` because a long measure is hard to read; a patch, a CSV or a source
+ * file has no measure to cap — its columns *are* its meaning (I-38) — so it is
+ * laid out against the page, exactly as a code block is. Capping it instead
+ * reflowed 24 lines of a source file at every terminal size from 88 columns up,
+ * while the margin grew without bound: at 400 columns the file was indented 155
+ * cells, cut at 88, and 157 columns stood empty. None of those rows were
+ * flagged `wide`, so `l` could not reach the tail at any size at all.
  */
 export function layoutText(src: string, opts: LayoutOptions): Doc {
-  const { left, inner } = geometry(opts);
+  const { left, inner, page } = geometry(opts);
   const { theme, level } = opts;
-  const margin = ' '.repeat(left);
   const lines: Line[] = [];
 
   // I-29: same rule as the markdown path — the file does not drive the terminal.
-  sanitizeSource(src).replace(/\n+$/, '').split('\n').forEach((raw, i) => {
+  const source = sanitizeSource(src).replace(/\n+$/, '').split('\n');
+  const natural = widest(source, displayWidth);
+
+  /* Scrolling lays the file out whole and lets the viewport pan over it;
+     wrapping chops, but at the page rather than at the text column. Either way
+     the floor is `inner`, so a narrow file still sits in the text column. */
+  const room = Math.max(inner, page - MARGIN * 2);
+  const width = opts.overflow === 'scroll' ? Math.max(inner, natural) : room;
+  /* What ends up on screen, which is the file's own width until it is chopped.
+     `width` is a budget and `chopSpans` never pads to it, so centring on the
+     budget would push a narrow file left of where prose sits. */
+  const shown = Math.min(natural, width);
+
+  /* Centred on what is shown rather than offset by a margin sized for the text
+     column. A source file is as wide as it is: at 400 columns a 176-cell file
+     was indented 155 cells and left 68 spare on the right, which is not a
+     margin, it is a lean. Capped at the margin prose would get, so a narrow
+     file still lines up with the rest of the app, and floored at `MARGIN` so a
+     file wider than the page keeps its breathing room. */
+  const centred = Math.floor((page - shown) / 2);
+  const indent = Math.max(Math.min(left, MARGIN), Math.min(left, centred));
+
+  /* Every row moves together or none does. A file is one thing the reader pans
+     across, not a stack of independent blocks — shifting only the long rows
+     would slide half a patch out from under the other half. */
+  const wide = opts.overflow === 'scroll' && indent + shown > page;
+  const margin = ' '.repeat(indent);
+
+  source.forEach((raw, i) => {
     // Tabs were already expanded against real tab stops by `sanitizeSource`.
     const spans = [{ text: raw, style: theme.text }];
-    for (const row of chopSpans(spans, inner)) {
+    for (const row of chopSpans(spans, width)) {
       const withMargin = [{ text: margin, style: {} }, ...row];
       const plain = plainSpans(withMargin).replace(/\s+$/, '');
-      lines.push({
+      const line: Line = {
         ansi: level === 0 ? plain : renderSpans(withMargin, level),
         plain,
         // One block per source line, so a resize still keeps the reader's place.
         block: i,
-      });
+      };
+      if (wide) line.wide = true;
+      lines.push(line);
     }
   });
 
-  return { lines, toc: [], code: [], width: inner };
+  return { lines, toc: [], code: [], width };
 }
+
+/** Breathing room between the terminal edge and the text, as in `layoutDoc`. */
+const MARGIN = 2;
 
 /**
  * Extensions shown verbatim, because markdown is not what they are (I-38).
