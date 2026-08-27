@@ -201,61 +201,66 @@ export function composeFrame(
        wrapped to fit, so shifting it would push it off screen for nothing. */
     const full = ansiWidth(text);
     const shifted = line?.wide === true && h > 0;
-    /* A row the viewport cannot show in full. Both cases are marked with `›`,
-       which says only what is true of both: the row continues past this edge.
-       Whether `l` can reach the rest is a separate question the status bar
-       answers. An ellipsis was tried and is wrong — with colour stripped it is
-       byte-identical to one the author typed, so the reader cannot tell the
-       document from the viewer, and a mark that only exists in colour is no
-       mark at all. Silently cutting a word is the one thing not allowed. */
-    let cut = false;
     if (shifted) text = sliceAnsi(text, h, h + body);
-    else if (full > body) {
-      text = sliceAnsi(text, 0, body);
-      cut = line?.wide !== true;
-    }
+    else if (full > body) text = sliceAnsi(text, 0, body);
 
     let row = padAnsi(text, body, {}, level);
-    /* Markers cost a cell, so they are only drawn where one can be spared.
-       Below that the row is already at the terminal's floor and adding a glyph
-       would push the frame past its own width. */
-    if (body >= 2) {
-      if (line?.wide === true) {
-        /* Honest edge markers: a row that continues past either edge says so,
-           otherwise there is no way to tell that `l` would reveal anything.
-           A row with nothing on it gets no mark — a whole verbatim file is
-           flagged `wide` so that it pans as one thing, and a blank line inside
-           it has no content to the left however far the viewport has moved.
-           The mark claims only what is true of every case it is drawn in. */
-        if (h > 0 && full > 0) row = paint('‹', theme.faint, level) + sliceAnsi(row, 1, body);
-        if (full > h + body) row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
-      } else if (cut) {
-        row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
-      }
-    }
+    const marks = edgeMarks(line, width, h, full);
+    if (marks.left) row = paint('‹', theme.faint, level) + sliceAnsi(row, 1, body);
+    if (marks.right) row = sliceAnsi(row, 0, body - 1) + paint('›', theme.faint, level);
     rows.push(row + (bar[i] ?? ' '));
   }
   return rows;
 }
 
 /**
+ * Which edge marks a row needs: `‹` over its first cell, `›` over its last.
+ *
+ * Honest markers — a row that continues past either edge says so, otherwise
+ * there is no way to tell that `l` would reveal anything. A row with nothing on
+ * it gets no mark: a whole verbatim file is flagged `wide` so that it pans as
+ * one thing, and a blank line inside it has no content to the left however far
+ * the viewport has moved. The mark claims only what is true of every case it is
+ * drawn in. An ellipsis was tried and is wrong — with colour stripped it is
+ * byte-identical to one the author typed, so the reader cannot tell the
+ * document from the viewer, and a mark that exists only in colour is no mark at
+ * all. Silently cutting a word is the one thing not allowed.
+ *
+ * `full` is passed in rather than measured, because the one caller on the
+ * scroll path has already measured it and I-4 does not allow measuring it
+ * again per row.
+ */
+function edgeMarks(
+  line: Line | undefined,
+  width: number,
+  hOffset: number,
+  full: number,
+): { left: boolean; right: boolean } {
+  const body = width - 1;
+  /* Markers cost a cell, so they are only drawn where one can be spared. Below
+     that the row is already at the terminal's floor and adding a glyph would
+     push the frame past its own width. */
+  if (!line || body < 2) return { left: false, right: false };
+  // Only rows laid out at their natural width move sideways, so only they can
+  // have anything off the left edge.
+  const h = line.wide === true ? hOffset : 0;
+  return { left: h > 0 && full > 0, right: full > h + body };
+}
+
+/**
  * True when a screen column is covered by an edge marker rather than by the row.
  *
- * `composeFrame` writes `‹` over the first cell and `›` over the last, so those
- * two cells show the viewer's own chrome and not the document underneath. A
- * click has to ask the same question or it follows whatever the marker is drawn
- * over — including a one-cell link the reader cannot even see. Kept beside the
- * code that draws them, and derived from the same three facts, so the two
- * cannot drift apart. See I-42.
+ * Those two cells show the viewer's own chrome and not the document underneath,
+ * so a click has to ask the same question or it follows whatever the marker is
+ * drawn over — including a one-cell link the reader cannot even see. It asks it
+ * of the same function `composeFrame` draws from, rather than restating the
+ * conditions, so there is nothing here that can drift out of step with what is
+ * actually on screen. See I-42.
  */
 export function isEdgeMarker(line: Line | undefined, column: number, width: number, hOffset: number): boolean {
-  const body = width - 1;
-  // Below two cells no marker is drawn at all: the row is already at the floor.
-  if (!line || body < 2) return false;
-  const h = line.wide === true ? hOffset : 0;
-  const full = ansiWidth(line.ansi);
-  if (line.wide === true && h > 0 && full > 0 && column === 0) return true;
-  return full > h + body && column === body - 1;
+  if (!line) return false;
+  const marks = edgeMarks(line, width, hOffset, ansiWidth(line.ansi));
+  return (marks.left && column === 0) || (marks.right && column === width - 2);
 }
 
 /** How far sideways the viewport may go, given the widest row on screen. */

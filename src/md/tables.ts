@@ -79,12 +79,13 @@ export function layoutTable(
      move over the table, rather than truncating cells nobody can then read.
 
      Wrapping does have to cut, but it cuts against the page, not the text
-     column. `solveWidths` only ever
-     shrinks a column below its natural width, so a table that already fits the
-     column is unchanged; a wider one keeps its cells instead of having them cut
-     to a width the terminal was never limited to. This is the one path where
-     truncation loses text outright — `--wrap` and one-shot printing have no
-     viewport to pan — so the budget has to be the room that actually exists. */
+     column (I-41; `layoutCode` and `layoutText` are the other two instances).
+     `solveWidths` only ever shrinks a column below its natural width, so a
+     table that already fits the column is unchanged; a wider one keeps its
+     cells instead of having them cut to a width the terminal was never limited
+     to. This is the one path where truncation loses text outright — `--wrap`
+     and one-shot printing have no viewport to pan — so the budget has to be
+     the room that actually exists. */
   const widths =
     opts.overflow === 'scroll'
       ? natural

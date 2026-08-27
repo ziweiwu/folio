@@ -59,7 +59,13 @@ export function layoutCode(
      up with the prose exactly as before; only a block too wide for the column
      grows, and only as far as the page can show. Without this a 155-cell
      command on a 300-column terminal was split across two rows of 84 with 110
-     columns standing empty beside it. */
+     columns standing empty beside it.
+
+     One instance of I-41, which is where the rule itself is written down. The
+     others are `layoutTable` and `layoutText`, and they are deliberately not
+     one shared function: this pads a band and so must cap at `natural`, the
+     table redistributes a budget across columns rather than clamping a width,
+     and the verbatim path chops without padding and so needs no cap at all. */
   const inner =
     opts.overflow === 'scroll'
       ? Math.max(fits, natural)

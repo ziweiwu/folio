@@ -36,9 +36,11 @@ export function layoutText(src: string, opts: LayoutOptions): Doc {
 
   /* Scrolling lays the file out whole and lets the viewport pan over it;
      wrapping chops, but at the page rather than at the text column. Either way
-     the floor is `inner`, so a narrow file still sits in the text column. */
-  const room = Math.max(inner, page - MARGIN * 2);
-  const width = opts.overflow === 'scroll' ? Math.max(inner, natural) : room;
+     the floor is `inner`, so a narrow file still sits in the text column.
+     I-41 again, and the one instance that needs no cap at `natural`, because
+     `chopSpans` does not pad a row out to the budget it is given. */
+  const wrapWidth = Math.max(inner, page - MARGIN * 2);
+  const width = opts.overflow === 'scroll' ? Math.max(inner, natural) : wrapWidth;
   /* What ends up on screen, which is the file's own width until it is chopped.
      `width` is a budget and `chopSpans` never pads to it, so centring on the
      budget would push a narrow file left of where prose sits. */

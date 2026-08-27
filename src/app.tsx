@@ -389,16 +389,17 @@ export function App({ initial, name, options, theme, level, mouse, reload, watch
          carries and this one did not. */
       const attempt = ++followAttempt.current;
       const nav = navGeneration.current;
+      /** Superseded by a later link, or by a `backspace` taken while this waited. */
+      const overtaken = () => attempt !== followAttempt.current || nav !== navGeneration.current;
       let next: Awaited<ReturnType<NonNullable<typeof open>>>;
       try {
         next = await open(link.path);
       } catch (err) {
-        if (attempt !== followAttempt.current || nav !== navGeneration.current) return;
+        if (overtaken()) return;
         setStatus(`${link.path}: ${(err as Error).message}`);
         return;
       }
-      // Superseded by a later link, or by a `backspace` taken while this waited.
-      if (attempt !== followAttempt.current || nav !== navGeneration.current) return;
+      if (overtaken()) return;
       if (!next) setStatus(`${link.path}: not found`);
       else goTo(next, link.anchor, true);
     },
